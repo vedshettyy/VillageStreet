@@ -1,0 +1,810 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Morning at the Bank Street (low-poly, VR-ready)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#f6dcc4;font-family:system-ui,sans-serif}
+  canvas{display:block}
+  /* Start overlay: z-index 10, deliberately BELOW the VR button (1000) so it never covers it */
+  #overlay{position:fixed;inset:0;z-index:10;display:flex;align-items:center;justify-content:center;
+    background:rgba(40,30,50,.45);color:#fff;text-align:center;cursor:pointer}
+  #overlay div{max-width:420px;padding:24px 28px;background:rgba(30,25,45,.8);border-radius:16px;line-height:1.5}
+  #overlay h1{margin:0 0 8px;font-size:24px}
+  /* Prominent Enter VR: three.js VRButton styles itself inline, so we override with !important */
+  #vrwrap{position:fixed;top:16px;right:16px;z-index:1000}
+  #vrwrap button{position:static!important;width:auto!important;padding:14px 22px!important;
+    background:#e4572e!important;color:#fff!important;border:3px solid #fff!important;
+    border-radius:14px!important;font:700 18px system-ui,sans-serif!important;opacity:1!important;
+    cursor:pointer;box-shadow:0 4px 16px rgba(0,0,0,.35)}
+  /* Headset icon drawn as an inline SVG (no external file) */
+  #vrwrap button::before{content:"";display:inline-block;width:30px;height:17px;margin-right:10px;vertical-align:-3px;
+    background:url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 28 16'><rect x='1' y='1' width='26' height='14' rx='6' fill='white'/><circle cx='8.5' cy='8' r='3' fill='%23e4572e'/><circle cx='19.5' cy='8' r='3' fill='%23e4572e'/></svg>") no-repeat center/contain}
+  #legend{position:fixed;left:12px;bottom:12px;z-index:20;padding:10px 14px;font-size:13px;line-height:1.5;
+    background:rgba(30,25,45,.7);color:#fff;border-radius:10px}
+  #hint{position:fixed;left:50%;bottom:70px;transform:translateX(-50%);z-index:20;padding:8px 14px;
+    background:rgba(228,87,46,.92);color:#fff;border-radius:20px;font-size:14px;display:none}
+  #xh{position:fixed;left:50%;top:50%;width:6px;height:6px;margin:-3px;border-radius:50%;background:#fff;box-shadow:0 0 0 1px #000;z-index:15;pointer-events:none}
+  #snd{position:fixed;top:16px;left:12px;z-index:20;padding:8px 12px;border:0;border-radius:8px;background:#2f5d8a;color:#fff;font-size:14px;cursor:pointer}
+</style>
+</head>
+<body>
+<div id="overlay"><div>
+  <h1>Morning on Bank Street</h1>
+  <p>Walk the lane, enter the bank, and step up to the glowing models on the plaza to inspect them.</p>
+  <p><b>Click to start</b> (on Quest, press Enter VR instead)</p>
+</div></div>
+<div id="vrwrap"></div>
+<button id="snd">Sound: off</button>
+<input type="file" id="file" hidden accept="image/*,.pdf"><div id="xh"></div><div id="hint">Press E (or VR trigger) to hold the object</div>
+<div id="legend">
+  <b>Controls</b><br>
+  Desktop: WASD / arrows walk · Shift faster · mouse look (or drag) · scroll zoom<br>
+  F first/third person · E hold object · M sound<br>Kiosk: aim the dot at its screen, click or Enter (VR: point + trigger)<br>
+  VR: left stick glide · right stick snap-turn 30° · A/X sound · trigger holds object
+</div>
+
+<!-- importmap: tells the browser where "three" lives, so we can write: import ... from 'three' -->
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+"three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { VRButton } from 'three/addons/webxr/VRButton.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';   // boxes with soft bevelled edges
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';       // fake studio light for realistic reflections
+
+/* ============ 1. RENDERER, SCENE, RIG ============ */
+const EYE = 1.6, RADIUS = 0.35;          // desktop eye height; player collision radius (m)
+const $ = id => document.getElementById(id);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;      // soft shadow edges
+renderer.toneMapping = THREE.ACESFilmicToneMapping;    // filmic, cinematic colour
+renderer.toneMappingExposure = 0.95;
+renderer.xr.enabled = true;
+renderer.xr.setReferenceSpaceType('local-floor');      // y=0 is the real floor in VR
+renderer.xr.setFoveation(1);                           // Quest perf: blur edges slightly
+document.body.appendChild(renderer.domElement);
+$('vrwrap').appendChild(VRButton.createButton(renderer));
+
+const SKY = 0xf6dcc4;                                   // soft peach morning haze
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(SKY);
+scene.fog = new THREE.Fog(SKY, 35, 230);
+scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), .04).texture;   // reflections on glass/paint/metal
+// Gradient sky dome: deep blue overhead fading to the same peach as the fog at the horizon
+const sky = new THREE.Mesh(new THREE.SphereGeometry(400, 32, 16), new THREE.ShaderMaterial({
+  side: THREE.BackSide, depthWrite: false, fog: false,
+  uniforms: { top: { value: new THREE.Color(0x6fa8e0) }, hor: { value: new THREE.Color(SKY) } },
+  vertexShader: 'varying vec3 p;void main(){p=position;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',
+  fragmentShader: 'uniform vec3 top,hor;varying vec3 p;void main(){float h=clamp(normalize(p).y*1.6,0.,1.);gl_FragColor=vec4(mix(hor,top,pow(h,.7)),1.);#include <tonemapping_fragment>\n#include <colorspace_fragment>\n}'
+}));
+sky.renderOrder = -1; scene.add(sky);                // distance fog: far things melt into the sky
+
+const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.1, 500);
+/* RIG: a group that holds the camera (and VR controllers). We move/turn the RIG, not the camera.
+   Desktop: rig.y = 1.6 gives eye height. VR: rig.y = 0 because the headset adds real head height. */
+const rig = new THREE.Group();
+rig.add(camera); scene.add(rig);
+rig.position.set(0, EYE, 3.8);   // start on the south pavement, looking at the bank (z=8 was inside a shop!)
+
+/* ============ 2. LIGHTING ============ */
+scene.add(new THREE.HemisphereLight(0xfff1e0, 0xb7c08a, 1.1));   // sky colour above, ground bounce below
+const sun = new THREE.DirectionalLight(0xffd9a8, 2.4);           // low warm sun = morning
+sun.position.set(-40, 28, 35);
+sun.castShadow = true;
+sun.shadow.mapSize.set(location.search.includes('lite') ? 1024 : 2048, location.search.includes('lite') ? 1024 : 2048);   // add ?lite to the URL for weaker headsets                              // drop to 1024 if Quest feels slow
+Object.assign(sun.shadow.camera, { left: -50, right: 50, top: 50, bottom: -50, near: 1, far: 140 });
+sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.03;
+scene.add(sun);
+
+/* ============ 3. HELPERS ============ */
+let seed = 7; const rnd = () => (seed = seed * 16807 % 2147483647) / 2147483647;   // repeatable "random"
+const mats = {};                                          // material cache: same colour = same material (saves memory)
+const M = (c, o = {}) => mats[c + JSON.stringify(o)] ??= new THREE.MeshStandardMaterial({ color: c, roughness: .8, metalness: 0, envMapIntensity: .4, map: GRAIN, ...o });
+const add = (p, geo, c, x, y, z, o) => { const m = new THREE.Mesh(geo, M(c, o)); m.position.set(x, y, z); m.castShadow = m.receiveShadow = true; p.add(m); return m; };
+const box = (p, w, h, d, c, x, y, z, o) => add(p, new THREE.BoxGeometry(w, h, d), c, x, y, z, o);
+const cyl = (p, rt, rb, h, c, x, y, z, seg = 8, o) => add(p, new THREE.CylinderGeometry(rt, rb, h, Math.max(seg, 20)), c, x, y, z, o);   // HIGH-POLY: at least 20 sides
+const ball = (p, r, c, x, y, z) => add(p, new THREE.SphereGeometry(r, 24, 16), c, x, y, z);
+const rbox = (p, w, h, d, c, x, y, z, r = .06, o) => add(p, new RoundedBoxGeometry(w, h, d, 3, Math.min(r, w / 2 - .001, h / 2 - .001, d / 2 - .001)), c, x, y, z, o);
+const ctex = cv => { const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; return t; };   // canvas -> correctly coloured texture
+function noiseTex(r, g, b, v, rx, ry = rx, size = 128) {         // procedural speckle texture (asphalt, grass, concrete) - no image files
+  const cv = document.createElement('canvas'); cv.width = cv.height = size; const c = cv.getContext('2d');
+  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) { const n = (Math.random() - .5) * v; c.fillStyle = 'rgb(' + (r + n | 0) + ',' + (g + n | 0) + ',' + (b + n | 0) + ')'; c.fillRect(x, y, 1, 1); }
+  const t = ctex(cv); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(rx, ry); return t;
+}
+const GRAIN = noiseTex(238, 238, 238, 36, 1, 1, 64);               // faint plaster grain on every surface
+
+/* ============ 4. COLLISION ============
+   `solids` = list of rectangles (footprints) seen from above. Each factory describes its footprint
+   in userData.fp as [centreX, centreZ, width, depth] in LOCAL space; place() converts to world space.
+   Only static things are registered, so moving cars/people never leave collision behind. */
+const solids = [];
+function place(g, x, z, ry = 0) {                         // put a factory-made object in the world
+  g.position.set(x, 0, z); g.rotation.y = ry; scene.add(g);
+  const c = Math.cos(ry), s = Math.sin(ry), quarter = Math.abs(c) > 0.7;   // only 90° turns supported
+  for (const [lx, lz, w, d] of g.userData.fp || []) {
+    const wx = x + lx * c + lz * s, wz = z - lx * s + lz * c;               // rotate local centre
+    const hw = (quarter ? w : d) / 2, hd = (quarter ? d : w) / 2;
+    solids.push({ x0: wx - hw, x1: wx + hw, z0: wz - hd, z1: wz + hd });
+  }
+  return g;
+}
+const blocked = (x, z) => solids.some(s => x > s.x0 - RADIUS && x < s.x1 + RADIUS && z > s.z0 - RADIUS && z < s.z1 + RADIUS) ||
+  movers.some(m => Math.abs(x - m.o.position.x) < m.hl + RADIUS && Math.abs(z - m.o.position.z) < m.hw + RADIUS);   // moving things count as obstacles (only while they are there!)
+function move(dx, dz) {                                   // test X and Z separately => you slide along walls
+  const p = rig.position;
+  if (!blocked(p.x + dx, p.z)) p.x += dx;
+  if (!blocked(p.x, p.z + dz)) p.z += dz;
+  p.x = THREE.MathUtils.clamp(p.x, -70, 70); p.z = THREE.MathUtils.clamp(p.z, -40, 40);
+}
+
+/* ============ 5. FACTORIES (one function = one kind of object, reusable many times) ============ */
+const PASTELS = [0xf2c6a0, 0xe9a6a6, 0x9fd3c7, 0xf5e6a8, 0xb5c7ec, 0xf0b27a];
+
+function makeBuilding(w, d, h, col) {                     // small shop/house; door on the +z face
+  const g = new THREE.Group(); g.userData.fp = [[0, 0, w, d]];
+  box(g, w, h, d, col, 0, h / 2, 0);
+  box(g, w + .3, .25, d + .3, 0xd9d2c5, 0, h + .12, 0);                    // roof slab
+  box(g, .9, 2, .1, 0x5b3a29, 0, 1, d / 2 + .02);                           // door
+  box(g, 1.8, .15, .8, 0xd64545, 0, 2.5, d / 2 + .4);                       // awning
+  const n = Math.floor(w / 2.2);
+  for (let r = 0; r < (h > 5 ? 2 : 1); r++) for (let i = 0; i < n; i++) {   // windows
+    const x = (i - (n - 1) / 2) * 2.2;
+    if (Math.abs(x) > .9 || r) box(g, .9, .9, .1, 0x9ed0e6, x, 3 + r * 2.2, d / 2 + .02, { emissive: 0x335566 });
+  }
+  cyl(g, .5, .5, .9, 0x222233, w / 4, h + .7, 0, 8);                        // rooftop water tank
+  return g;
+}
+
+function makeTree(big) {
+  const g = new THREE.Group(); g.userData.fp = [[0, 0, .5, .5]];
+  cyl(g, .15, .22, 1.8, 0x6b4a2f, 0, .9, 0, 6);
+  const r = big ? 1.5 : 1.1, gc = big ? 0x5f9a54 : 0x79b062;
+  add(g, new THREE.IcosahedronGeometry(r, 2), gc, 0, 2.6, 0); add(g, new THREE.IcosahedronGeometry(r * .7, 2), 0x4f8a48, r * .5, 3.2, r * .3); add(g, new THREE.IcosahedronGeometry(r * .6, 2), 0x8cc070, -r * .5, 3.0, -r * .3);
+  return g;
+}
+
+function makeBike(col) {                                  // motorbike, faces +x
+  const g = new THREE.Group(); g.userData.fp = [[0, 0, 1.6, .5]];
+  for (const x of [-.55, .55]) cyl(g, .3, .3, .12, 0x222222, x, .3, 0, 10).rotation.x = Math.PI / 2;
+  box(g, 1, .25, .22, col, 0, .55, 0); box(g, .4, .22, .28, col, .2, .78, 0);
+  box(g, .5, .1, .24, 0x222222, -.2, .95, 0); box(g, .08, .6, .08, 0x555555, .5, .65, 0);
+  box(g, .1, .1, .6, 0x333333, .5, .98, 0);
+  return g;
+}
+
+function makeCar(col) {                                   // faces +x, moving (no footprint)
+  const g = new THREE.Group(), paint = { metalness: .55, roughness: .3, envMapIntensity: 1 };
+  rbox(g, 3.6, .6, 1.7, col, 0, .62, 0, .2, paint); rbox(g, 1.9, .5, 1.5, 0x8fc3dc, -.2, 1.15, 0, .2, { metalness: .9, roughness: .08, envMapIntensity: 1.2 });
+  rbox(g, 1.7, .08, 1.55, col, -.2, 1.42, 0, .04, paint);
+  for (const x of [-1.1, 1.1]) for (const z of [-.8, .8]) { cyl(g, .34, .34, .22, 0x1a1a1a, x, .34, z, 24).rotation.x = Math.PI / 2; cyl(g, .19, .19, .24, 0xcfcfcf, x, .34, z, 24, { metalness: .9, roughness: .3 }).rotation.x = Math.PI / 2; }
+  for (const z of [-.6, .6]) { box(g, .06, .14, .3, 0xfff6c8, 1.8, .7, z, { emissive: 0xffeeaa, emissiveIntensity: 1 }); box(g, .06, .12, .3, 0xd62828, -1.8, .7, z, { emissive: 0x880000, emissiveIntensity: .8 }); }
+  return g;
+}
+
+function makePerson(shirt) {                               // rounded (capsule) body, swinging arms and legs
+  const g = new THREE.Group(), skin = 0xc68642, cap = (p, r, len, c, x, y, z) => add(p, new THREE.CapsuleGeometry(r, len, 6, 14), c, x, y, z);
+  g.userData.legs = [-.12, .12].map(x => { const p = new THREE.Group(); p.position.set(x, .8, 0); cap(p, .085, .62, 0x3b3b58, 0, -.4, 0); g.add(p); return p; });
+  g.userData.arms = [-.27, .27].map(x => { const p = new THREE.Group(); p.position.set(x, 1.4, 0); cap(p, .055, .46, shirt, 0, -.28, 0); g.add(p); return p; });
+  cap(g, .17, .36, shirt, 0, 1.12, 0).scale.z = .65;
+  cyl(g, .05, .06, .1, skin, 0, 1.5, 0, 12);
+  ball(g, .17, skin, 0, 1.6, 0); ball(g, .18, 0x2a1d14, 0, 1.66, -.03); box(g, .06, .06, .08, 0xb5733a, 0, 1.58, .17);
+  return g;
+}
+
+function makeStall(canopy) {                              // hawker's stall + hawker; front faces +z
+  const g = new THREE.Group(); g.userData.fp = [[0, -.2, 1.6, 1.4]];
+  box(g, 1.6, .9, .8, 0x8a5a33, 0, .45, 0);
+  for (const x of [-.8, .8]) for (const z of [-.4, .4]) cyl(g, .04, .04, 2.2, 0x555555, x, 1.1, z, 5);
+  box(g, 1, .1, 1.4, canopy, -.5, 2.25, 0); box(g, 1, .1, 1.4, 0xffffff, .5, 2.25, 0);
+  for (let i = 0; i < 6; i++) ball(g, .13, [0xf28c28, 0xd64545, 0x6bbf59][i % 3], -.6 + i * .24, 1, .1);
+  const h = makePerson(0x8e44ad); h.position.set(0, 0, -.8); g.add(h);
+  return g;
+}
+
+function makeATM() {                                      // ATM kiosk; screen on +z face
+  const g = new THREE.Group(); g.userData.fp = [[0, 0, 1.1, .9]];
+  rbox(g, 1.1, 2.2, .9, 0x3a5a8a, 0, 1.1, 0, .08, { metalness: .4, roughness: .35, envMapIntensity: .8 });
+  box(g, .7, .5, .06, 0x66ffaa, 0, 1.6, .47, { emissive: 0x33cc77, emissiveIntensity: .9 });
+  box(g, .5, .25, .1, 0xcccccc, 0, 1.1, .45); box(g, .5, .08, .1, 0x111111, 0, .85, .45);
+  box(g, 1.4, .12, 1.2, 0xe4572e, 0, 2.3, .15);
+  return g;
+}
+
+function makeBank() {                                     // THE main feature: walls, door gap, counter, office desks
+  const g = new THREE.Group(), W = 12, D = 9, H = 4.2, T = .3; g.userData.fp = [];
+  const wall = (w, d, x, z) => { box(g, w, H, d, 0xe8d9b8, x, H / 2, z); g.userData.fp.push([x, z, w, d]); };
+  const solid = (w, h, d, c, x, z, o) => { box(g, w, h, d, c, x, h / 2, z, o); g.userData.fp.push([x, z, w, d]); };
+  box(g, W, .1, D, 0xcfc3a5, 0, .05, 0);                  // interior floor
+  wall(W, T, 0, -D / 2); wall(T, D, -W / 2, 0); wall(T, D, W / 2, 0);   // back + side walls
+  wall(4.8, T, -3.6, D / 2); wall(4.8, T, 3.6, D / 2);                  // front wall, leaving a 2.4 m door gap
+  for (const x of [-3.6, 3.6]) box(g, 4, 1.4, .1, 0x88c4e0, x, 2.2, D / 2 + .18, { transparent: true, opacity: .5 });
+  box(g, W + .8, .3, D + .8, 0x2f5d8a, 0, H + .15, 0);    // roof
+  box(g, 2.6, .15, 1.4, 0xf0b429, 0, 3.3, D / 2 + .7);    // door canopy
+  // sign: text drawn on a canvas (generated in code, not an image file)
+  const cv = document.createElement('canvas'); cv.width = 512; cv.height = 96;
+  const cx = cv.getContext('2d'); cx.fillStyle = '#f0b429'; cx.fillRect(0, 0, 512, 96);
+  cx.fillStyle = '#1d3557'; cx.font = 'bold 56px sans-serif'; cx.textAlign = 'center'; cx.fillText('CITY BANK', 256, 68);
+  const sign = new THREE.Mesh(new THREE.PlaneGeometry(5.6, 1.05), new THREE.MeshBasicMaterial({ map: ctex(cv) }));
+  sign.position.set(0, H + 1, D / 2 + .1); g.add(sign);
+  // inside: teller counter, glass screen, office desks (left), waiting bench (right)
+  solid(7, 1.1, .8, 0x7a5230, .5, -3.2);
+  box(g, 7, .9, .05, 0xaed8ea, .5, 1.55, -3.2, { transparent: true, opacity: .4 });
+  for (let i = 0; i < 3; i++) {
+    solid(1.6, .8, .8, 0xb08455, -4, -1.4 + i * 1.8);
+    box(g, .5, .35, .05, 0x222233, -4, 1, -1.4 + i * 1.8 - .2, { emissive: 0x2244aa });
+    { const z = -1.4 + i * 1.8; chairAt(g, -4, z + .9, Math.PI); if (i !== 1) sitter(g, 0x3b6ea5 + i * 0x2000, -4, z + .9, Math.PI); }   // staff chair + seated staff
+  }
+  solid(.1, 2.4, 4.4, 0xaed8ea, -2.5, 0, { transparent: true, opacity: .35 });   // glass office partition
+  solid(2.5, .5, .6, 0x556b8d, 4.5, 2.6);
+  for (const x of [2.2, 4.4]) { const b = makeBench(0x556b8d); b.position.set(x, 0, .6); g.add(b); g.userData.fp.push([x, .6, 1.6, .5]); }   // waiting benches
+  sitter(g, 0xd98e04, 2.2, .6, 0); sitter(g, 0x6a4c93, 4.4, .6, 0);                                  // people waiting
+  for (const x of [-1, 1.5, 3.5]) stander(g, 0x1d3557 + x * 4000, x, -3.95, 0);                      // tellers behind the counter
+  stander(g, 0xc0392b, .5, -2, Math.PI); stander(g, 0x2e86c1, 2.8, -2.1, Math.PI);                   // customers in the queue
+  stander(g, 0x4a4a4a, 1.7, 3.8, 0);                                                                 // security guard by the door
+  for (const x of [-3, 0, 3]) box(g, 1.5, .05, .6, 0xffffee, x, H - .04, 0, { emissive: 0xffffcc, emissiveIntensity: .8 });   // ceiling lights
+  cyl(g, .25, .2, .4, 0xb5651d, 5.3, .2, 3.6, 7); add(g, new THREE.IcosahedronGeometry(.4, 2), 0x4f9a4f, 5.3, .8, 3.6);       // plant
+  return g;
+}
+
+/* ---- helpers & new factories ---- */
+function signMesh(txt, bg, fg, w, h, px = 40) {            // text sign drawn on a canvas (no image files)
+  const cv = document.createElement('canvas'); cv.width = 512; cv.height = Math.round(512 * h / w);
+  const c = cv.getContext('2d'); c.fillStyle = bg; c.fillRect(0, 0, 512, cv.height);
+  c.fillStyle = fg; c.font = 'bold ' + px + 'px sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText(txt, 256, cv.height / 2);
+  return new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ map: ctex(cv) }));
+}
+function makeChair(c = 0x444a5a) {                         // office chair, backrest on -z side
+  const g = new THREE.Group();
+  box(g, .45, .08, .45, c, 0, .45, 0); box(g, .45, .5, .06, c, 0, .75, -.2);
+  cyl(g, .04, .04, .4, 0x222222, 0, .22, 0, 5); box(g, .4, .04, .4, 0x222222, 0, .03, 0);
+  return g;
+}
+function makeBench(c = 0x8a5a33) {                         // bench, faces +z
+  const g = new THREE.Group(); g.userData.fp = [[0, 0, 1.6, .5]];
+  box(g, 1.6, .08, .5, c, 0, .45, 0); box(g, 1.6, .5, .06, c, 0, .75, -.22);
+  for (const x of [-.7, .7]) box(g, .08, .45, .45, 0x444444, x, .22, 0);
+  return g;
+}
+const stander = (p, col, x, z, ry) => {                     // standing person inside a building group
+  const s = makePerson(col); s.position.set(x, .1, z); s.rotation.y = ry; p.add(s); p.userData.fp?.push([x, z, .5, .5]);
+};
+const sitter = (p, col, x, z, ry) => {                      // seated person: legs swung forward, body lowered
+  const s = makePerson(col); s.userData.legs.forEach(l => l.rotation.x = -Math.PI / 2);
+  s.position.set(x, -.3, z); s.rotation.y = ry; p.add(s);
+};
+const chairAt = (p, x, z, ry, c) => { const ch = makeChair(c); ch.position.set(x, 0, z); ch.rotation.y = ry; p.add(ch); };
+const bystander = (col, x, z, ry) => { const p = makePerson(col); p.userData.fp = [[0, 0, .5, .5]]; return place(p, x, z, ry); };   // static, solid person
+
+function makeShop(name, signCol) {                          // ENTERABLE 6x6 shop: door gap, shelves, counter, shopkeeper
+  const g = new THREE.Group(), W = 6, D = 6, H = 4, T = .25, col = PASTELS[name.length % 6]; g.userData.fp = [];
+  const wall = (w, d, x, z) => { box(g, w, H, d, col, x, H / 2, z); g.userData.fp.push([x, z, w, d]); };
+  const solid = (w, h, d, c, x, z) => { box(g, w, h, d, c, x, h / 2, z); g.userData.fp.push([x, z, w, d]); };
+  box(g, W, .1, D, 0xd9c7a3, 0, .05, 0);
+  wall(W, T, 0, -D / 2); wall(T, D, -W / 2, 0); wall(T, D, W / 2, 0); wall(2.2, T, -1.9, D / 2); wall(2.2, T, 1.9, D / 2);
+  box(g, 1.6, 1.4, T, col, 0, 3.3, D / 2);                  // wall above the door gap
+  for (const x of [-1.9, 1.9]) box(g, 1.2, 1.1, .1, 0x9ed0e6, x, 1.8, D / 2 + .14, { emissive: 0x335566 });
+  box(g, W + .3, .25, D + .3, 0xd9d2c5, 0, H + .12, 0);
+  box(g, 2.2, .15, .9, signCol, 0, 2.8, D / 2 + .5);        // awning
+  box(g, 3.4, .7, .15, 0x333333, 0, H + .6, D / 2);         // sign board on the roof edge
+  const sg = signMesh(name, '#' + new THREE.Color(signCol).getHexString(), '#ffffff', 3.2, .6, 44); sg.position.set(0, H + .6, D / 2 + .09); g.add(sg);
+  solid(4.6, 1.8, .5, 0x8a5a33, 0, -D / 2 + .5);            // back shelves, with coloured goods on them
+  for (let k = 0; k < 8; k++) box(g, .4, .3, .1, PASTELS[k % 6], -2 + k * .55, 1 + (k % 3) * .4, -D / 2 + .8);
+  solid(2.2, 1, .7, 0xb08455, 1.4, -.9);                    // counter
+  solid(1, .8, 1, 0xb08455, -1.8, .8);                      // display table
+  stander(g, 0x8e44ad, 1.4, -1.65, 0);                      // shopkeeper (faces the door)
+  stander(g, 0x2b8a6e, 0.2, -.2, Math.PI);                  // a customer
+  return g;
+}
+
+function makeKiosk() {                                      // Govt. information kiosk (after the reference photo)
+  const g = new THREE.Group(); g.userData.fp = [[0, 0, .9, .7]];
+  const CREAM = 0xece6d8, DARK = 0x4a4540, DEPTH = .74, TILT = .058, glow = { emissive: 0xffb347, emissiveIntensity: 2 };
+  // 1) body = a SIDE PROFILE drawn as a curve, then extruded sideways with bevelled edges (waist, hood overhang, flared base)
+  const sh = new THREE.Shape();
+  sh.moveTo(-.2, .1); sh.lineTo(.26, .1); sh.bezierCurveTo(.3, .45, .1, .6, .17, .95);
+  sh.lineTo(.12, 1.12); sh.lineTo(.17, 1.98); sh.bezierCurveTo(.18, 2.07, .3, 2.1, .38, 2.09);
+  sh.lineTo(.38, 2.14); sh.bezierCurveTo(.2, 2.2, -.1, 2.2, -.2, 2.1); sh.lineTo(-.2, .1);
+  const geo = new THREE.ExtrudeGeometry(sh, { depth: DEPTH, bevelEnabled: true, bevelThickness: .04, bevelSize: .04, bevelSegments: 4, curveSegments: 24 });
+  geo.translate(0, 0, -DEPTH / 2); geo.rotateY(-Math.PI / 2);          // shape x -> world forward (+z)
+  add(g, geo, CREAM, 0, 0, 0, { roughness: .3, envMapIntensity: .8 });
+  rbox(g, .8, .1, .74, DARK, 0, .05, .09, .03); box(g, .9, .02, .8, 0xffc266, 0, .012, .09, glow);   // dark base + glowing rim
+  rbox(g, .8, .2, .46, DARK, 0, 1.02, .2, .05);                                                    // dark service console
+  box(g, .2, .03, .14, 0x111111, -.27, 1.125, .26); box(g, .24, .02, .06, 0x111111, 0, 1.125, .28); box(g, .14, .03, .14, 0x0e2a3a, .27, 1.125, .26);   // scanner, printout slot, card reader
+  const lab = document.createElement('canvas'); lab.width = 512; lab.height = 40; const lc = lab.getContext('2d');
+  lc.fillStyle = '#4a4540'; lc.fillRect(0, 0, 512, 40); lc.fillStyle = '#ddd'; lc.font = '17px sans-serif'; lc.textAlign = 'center';
+  lc.fillText('Scan Documents', 90, 26); lc.fillText('Collect Printout', 256, 26); lc.fillText('Aadhaar / Card', 424, 26);
+  const lm = new THREE.Mesh(new THREE.PlaneGeometry(.74, .058), new THREE.MeshBasicMaterial({ map: ctex(lab) })); lm.position.set(0, .975, .433); g.add(lm);
+  // 2) screen: black bezel + a canvas-drawn touchscreen UI
+  rbox(g, .7, .94, .05, 0x111418, 0, 1.56, .17, .025, { roughness: .2 }).rotation.x = TILT;
+  const cv = document.createElement('canvas'); cv.width = 512; cv.height = 730; const c = cv.getContext('2d');
+  const gr = c.createLinearGradient(0, 0, 0, 730); gr.addColorStop(0, '#cfe6ff'); gr.addColorStop(1, '#f4f9ff'); c.fillStyle = gr; c.fillRect(0, 0, 512, 730);
+  c.fillStyle = '#dbe8fb'; c.beginPath(); c.roundRect(392, 24, 100, 34, 12); c.fill();
+  c.textAlign = 'center'; c.fillStyle = '#1d3a6e'; c.font = '20px sans-serif'; c.fillText('English', 442, 48);
+  c.font = 'bold 42px sans-serif'; c.fillText('Find. Apply. Track.', 256, 125); c.font = '22px sans-serif'; c.fillText('Government Schemes Made Simple', 256, 162);
+  [['Explore Schemes', 'Find schemes that match your needs', '#3b82d6', 200], ['Apply for a Scheme', 'Upload documents and apply', '#35a36a', 316], ['Check Application Status', 'Track your application in real time', '#e6a23c', 432]].forEach(([t, d, col, y]) => {
+    c.fillStyle = col; c.beginPath(); c.roundRect(34, y, 444, 98, 18); c.fill();
+    c.strokeStyle = '#fff'; c.lineWidth = 5; c.beginPath(); c.arc(92, y + 49, 20, 0, 7); c.stroke();
+    c.textAlign = 'left'; c.fillStyle = '#fff'; c.font = 'bold 25px sans-serif'; c.fillText(t, 140, y + 44); c.font = '17px sans-serif'; c.fillText(d, 140, y + 70);
+  });
+  c.textAlign = 'center'; c.fillStyle = '#44556f'; c.font = '19px sans-serif'; c.fillText('Sabka Saath · Sabka Vikas', 256, 640); c.fillText('Sabka Vishwas · Sabka Prayas', 256, 668);
+  const tex = ctex(cv), scr = new THREE.Mesh(new THREE.PlaneGeometry(.6, .84), new THREE.MeshBasicMaterial({ map: tex, toneMapped: false })); scr.position.set(0, 1.56, .198); scr.rotation.x = TILT; g.add(scr);
+  Object.assign(g.userData, { cv, tex, scr });   // the kiosk UI (section 9b) draws on this canvas
+  // 3) hood LED strip, Digital India logo, speaker grille
+  box(g, .6, .012, .04, 0xffd699, 0, 2.07, .3, glow);
+  const lg = document.createElement('canvas'); lg.width = 256; lg.height = 128; const l = lg.getContext('2d');
+  l.fillStyle = '#ece6d8'; l.fillRect(0, 0, 256, 128); l.lineWidth = 12;
+  [['#ff9933', 0], ['#bbbbbb', 1], ['#138808', 2]].forEach(([col, k]) => { l.strokeStyle = col; l.beginPath(); l.arc(50, 64, 40 - k * 3, -2.4 + k * .5, -.4 + k * .9); l.stroke(); });
+  l.fillStyle = '#1d3a6e'; l.font = 'italic bold 30px sans-serif'; l.textAlign = 'left'; l.fillText('Digital India', 100, 62); l.font = 'italic 15px sans-serif'; l.fillText('Power To Empower', 100, 86);
+  const lo = new THREE.Mesh(new THREE.PlaneGeometry(.34, .17), new THREE.MeshBasicMaterial({ map: ctex(lg) })); lo.position.set(0, .5, .262); g.add(lo);
+  const sp = document.createElement('canvas'); sp.width = sp.height = 64; const q = sp.getContext('2d'); q.fillStyle = '#ece6d8'; q.fillRect(0, 0, 64, 64); q.fillStyle = '#555';
+  for (let i = 0; i < 6; i++) for (let j = 0; j < 6; j++) { q.beginPath(); q.arc(8 + i * 10.5, 8 + j * 10.5, 2.6, 0, 7); q.fill(); }
+  const sg2 = new THREE.Mesh(new THREE.PlaneGeometry(.11, .11), new THREE.MeshBasicMaterial({ map: ctex(sp) })); sg2.position.set(-.2, .26, .312); g.add(sg2);
+  // 4) HEADER board on two posts above the hood (government information kiosk)
+  for (const x of [-.3, .3]) cyl(g, .025, .025, .3, 0x555555, x, 2.28, .1, 12);
+  rbox(g, 1.6, .34, .06, 0x1d3557, 0, 2.42, .1, .02);
+  const hs = signMesh('GOVT. INFORMATION KIOSK', '#1d3557', '#ffffff', 1.5, .3, 34); hs.position.set(0, 2.42, .134); g.add(hs);
+  return g;
+}
+
+function makeVeg(kind) {                                    // small crate of vegetables (holdable)
+  const g = new THREE.Group(); box(g, .4, .12, .4, 0x8a5a33, 0, .06, 0);
+  if (kind === 'tomato') for (let k = 0; k < 5; k++) ball(g, .09, 0xd62828, -.1 + (k % 3) * .1, .2, -.06 + (k > 2 ? .12 : 0));
+  if (kind === 'carrot') for (let k = 0; k < 4; k++) { add(g, new THREE.ConeGeometry(.04, .3, 6), 0xf28c28, -.04, .17, -.12 + k * .08).rotation.z = -Math.PI / 2; box(g, .05, .05, .05, 0x3a9a3a, -.2, .17, -.12 + k * .08); }
+  if (kind === 'cabbage') { add(g, new THREE.IcosahedronGeometry(.17, 2), 0x7cc36a, 0, .27, 0); add(g, new THREE.IcosahedronGeometry(.12, 2), 0xa5dc8f, 0, .3, 0); }
+  if (kind === 'pumpkin') { ball(g, .16, 0xf08a24, 0, .26, 0).scale.y = .8; box(g, .04, .08, .04, 0x4b6b2f, 0, .43, 0); }
+  return g;
+}
+function makeWatchman() {                                   // khaki uniform, cap and a wooden stick
+  const p = makePerson(0x8b7d4f); p.userData.fp = [[0, 0, .5, .5]];
+  cyl(p, .19, .19, .08, 0x3a3a3a, 0, 1.78, 0, 8); box(p, .04, 1.1, .04, 0x5b3a29, .4, .85, .1);
+  return p;
+}
+function makeMountain(r, h, col) {                          // jittered cone with snow near the peak (vertex colours)
+  const geo = new THREE.ConeGeometry(r, h, 28, 8, true), p = geo.attributes.position, c0 = new THREE.Color(col), sn = new THREE.Color(0xf4f6fa), cols = [];
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), y = p.getY(i), z = p.getZ(i), t = (y + h / 2) / h, n = Math.sin(x * .21 + z * .13) * Math.cos(z * .17 - x * .09);
+    p.setX(i, x + n * r * .12 * (1 - t)); p.setZ(i, z - n * r * .1 * (1 - t)); p.setY(i, y + n * h * .05 * (1 - t));
+    const k = THREE.MathUtils.smoothstep(t, .68, .8), c = c0.clone().lerp(sn, k); cols.push(c.r, c.g, c.b);
+  }
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3)); geo.computeVertexNormals();
+  const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, flatShading: true }));
+  m.position.y = h / 2 - 2; return m;
+}
+
+/* ============ 6. BUILD THE WORLD (factories placed in loops) ============ */
+// Ground, road (5 m wide = narrow), pavements, plaza in front of bank, dashed centre line
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(700, 700), new THREE.MeshStandardMaterial({ map: noiseTex(150, 176, 104, 60, 150), roughness: 1 }));
+ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; scene.add(ground);
+box(scene, 140, .06, 5, 0xffffff, 0, .03, 0).material = new THREE.MeshStandardMaterial({ map: noiseTex(74, 74, 82, 34, 70, 2), roughness: .95 });
+const pavMat = new THREE.MeshStandardMaterial({ map: noiseTex(205, 198, 186, 30, 70, 2), roughness: .9 });
+for (const z of [-3.75, 3.75]) box(scene, 140, .12, 2.5, 0xffffff, 0, .06, z).material = pavMat;
+box(scene, 14, .12, 2.5, 0xe7ddc9, 0, .06, -6.2);
+for (let i = -15; i <= 15; i++) box(scene, 1.2, .02, .12, 0xffffff, i * 4, .07, 0);
+
+place(makeBank(), 0, -12);                                                  // the bank, centre-back
+place(makeATM(), 8.5, -6.3); place(makeATM(), 10, -6.3); const KIOSK = place(makeKiosk(), 12, -6.3); place(makeWatchman(), 2, -6.3);   // watchman stands in front of the bank                   // two ATM kiosks beside it
+
+const SHOPS = [['GROCERY', 0x2f7d32], ['CHAI & SNACKS', 0xf28c28], ['TAILOR', 0x8e44ad], ['PHARMACY', 0x2f9e8f], ['SWEETS', 0xd64545]];
+const N = { '-3': 0, 3: 1 }, S = { '-2': 2, 1: 3, 3: 4 };      // which building index becomes which shop (north / south row)
+const pick = (i, m, off) => m[i] === undefined ? makeBuilding(6, 6, 4.5 + rnd() * 4, PASTELS[(i + off) % 6]) : makeShop(...SHOPS[m[i]]);
+// Loop 1: building rows. One function, many placements, each with its own size/colour/rotation
+for (let i = -4; i <= 4; i++) {
+  const x = i * 8;
+  place(pick(i, S, 8), x, 10, Math.PI);   // south row faces the road
+  if (Math.abs(x) > 12) place(pick(i, N, 10), x, -9, 0);  // north row (gap for the bank)
+  place(makeTree(i % 2 === 0), x + 4, 6.2);                                                            // trees along south pavement
+}
+for (let i = 0; i < 6; i++) place(makeTree(true), -22 + i * 9, -20);          // trees behind bank
+
+// Loop 2: parked bikes, hawker stalls
+[[-14, -5.4], [-19, -5.4], [15, -5.4], [20, -5.4], [-8, 5.6], [8, 5.6]].forEach(([x, z], i) => place(makeBike(PASTELS[i % 6]), x, z, rnd() * 0.4 - 0.2));
+[[-12, -4.6, 0], [-16.5, -4.6, 0], [18, -4.6, 0], [-5, 4.6, Math.PI], [14, 4.6, Math.PI]].forEach(([x, z, r], i) =>
+{ place(makeStall([0xd64545, 0xf28c28, 0x2f9e8f][i % 3]), x, z, r);
+  for (const dx of [-.5, .5]) bystander(PASTELS[(i + (dx > 0 ? 3 : 1)) % 6] ^ 0x202020, x + dx, z + (r ? -1 : 1), r ? 0 : Math.PI); });   // customers facing the stall
+
+[[-26, 4.6], [-11, 4.6], [11, 4.6], [26, 4.6]].forEach(([x, z]) => place(makeBench(), x, z, Math.PI));   // pavement benches face the road
+place(makeBench(), -6.2, -6.4); place(makeBench(), 6.2, -6.4);                                       // plaza benches
+for (let i = 0; i < 10; i++) place(makeTree(i % 2 === 0), (i < 5 ? -1 : 1) * (16 + (i % 5) * 5), -15.5);   // trees behind the north shops
+place(makeTree(false), -10, -6.4);
+// Moving things: cars (wrap around the road) and pedestrians (ping-pong on pavements)
+const movers = [];
+for (let i = 0; i < 4; i++) {
+  const car = makeCar([0xc0392b, 0xf1c40f, 0xecf0f1, 0x2980b9][i]); const dir = i % 2 ? -1 : 1;
+  car.position.set(-50 + i * 28, 0, dir * 1.1); car.rotation.y = dir > 0 ? 0 : Math.PI; scene.add(car);
+  movers.push({ o: car, v: dir * (3 + i * .6), min: -62, max: 62, wrap: true, ph: 0, hl: 1.8, hw: .85 });
+}
+for (let i = 0; i < 8; i++) {
+  const p = makePerson(PASTELS[i % 6] ^ 0x303030); p.position.set(-30 + i * 8, 0, i % 2 ? 2.9 : -2.9); scene.add(p);
+  movers.push({ o: p, v: (i % 2 ? 1 : -1) * (.8 + rnd() * .5), min: -35, max: 35, ph: i, hl: .3, hw: .3, lz: i % 2 ? 2.9 : -2.9, lat: 0, want: 0 });
+}
+const avatar = makePerson(0x2b6cb0); avatar.visible = false; scene.add(avatar);   // you, in third person
+
+/* ============ 6b. PHYSICS, SMART TRAFFIC, CULLING ============ */
+let pvx = 0, pvz = 0, frame = 0;                            // player velocity (m/s) and frame counter
+const clamp = THREE.MathUtils.clamp;
+// zebra crossing + a pedestrian who crosses it. Cars yield (prio = has right of way), and the walker waits for you.
+for (let k = -3; k <= 3; k++) box(scene, .4, .02, 5, 0xffffff, -2 + k * .7, .075, 0);
+{ const p = makePerson(0xe4572e); p.position.set(-2, 0, -3.2); scene.add(p); movers.push({ o: p, v: .9, ax: 'z', min: -3.4, max: 3.4, ph: 3, hl: .3, hw: .3, prio: true }); }
+const solidAt = (x, z) => solids.some(s => x > s.x0 - .3 && x < s.x1 + .3 && z > s.z0 - .3 && z < s.z1 + .3);
+function clearAhead(m, lat = 0, back = 0) {   // lat = test as if standing this far sideways; back = also count things this far behind                                    // is the space in front of this mover free?
+  const a = m.ax || 'x', l = a === 'x' ? 'z' : 'x', p = m.o.position, d = Math.sign(m.v0);
+  const look = m.hl + .6 + Math.abs(m.cur) * (m.hl > 1 ? 1 : .5);   // cars look further ahead the faster they go
+  const pl = m.lz !== undefined ? m.lz + lat : p[l];
+  const chk = (q, eh, ew) => (q[a] - p[a]) * d > -back && (q[a] - p[a]) * d < look + eh && Math.abs(q[l] - pl) < m.hw + ew + .15;
+  if (chk(rig.position, .3, .3)) return false;
+  if (!m.prio) for (const n of movers) if (n !== m && chk(n.o.position, a === 'x' ? n.hl : n.hw, a === 'x' ? n.hw : n.hl)) return false;
+  return true;
+}
+function pushOut() {                                        // if a car/person ends up on top of you, slide out along the shortest way
+  const p = rig.position;
+  for (const m of movers) {
+    const q = m.o.position, ex = m.hl + RADIUS - Math.abs(p.x - q.x), ez = m.hw + RADIUS - Math.abs(p.z - q.z);
+    if (ex > 0 && ez > 0) { if (ex < ez) p.x += Math.sign(p.x - q.x || 1) * ex; else p.z += Math.sign(p.z - q.z || 1) * ez; }
+  }
+}
+// Physics props: balls, cones, crates. Gravity + bounce + friction; pushed by you, cars, people, walls and each other.
+const props = [];
+const addProp = (mesh, r, h, e, fr, roll, x, z) => { mesh.position.set(x, h, z); scene.add(mesh); props.push({ o: mesh, r, h, e, fr, roll, v: new THREE.Vector3() }); };
+for (const [x, z] of [[-3, -6.3], [5, -6.3]]) { const b = new THREE.Group(); rbox(b, .5, .5, .5, 0xa97c50, 0, 0, 0, .03); addProp(b, .35, .25, .15, 4, false, x, z); }
+function thud(v) {                                          // short low "bump" sound scaled by impact speed
+  if (!ac || !soundOn || ac.currentTime - lastThud < .08) return; lastThud = ac.currentTime;
+  const o = ac.createOscillator(), g = ac.createGain(), n = ac.currentTime;
+  o.frequency.setValueAtTime(130, n); o.frequency.exponentialRampToValueAtTime(45, n + .15);
+  g.gain.setValueAtTime(Math.min(.3, .05 * v), n); g.gain.exponentialRampToValueAtTime(.001, n + .18); o.connect(g); g.connect(master); o.start(); o.stop(n + .2);
+}
+function collideRect(p, x0, x1, z0, z1, vx = 0, vz = 0, up = 0, pad = 0) {   // push a prop out of a (maybe moving) rectangle and bounce it
+  const o = p.o.position, v = p.v, R = p.r + pad, dx = o.x - clamp(o.x, x0, x1), dz = o.z - clamp(o.z, z0, z1), d = Math.hypot(dx, dz);
+  if (d >= R || d < 1e-5) return;
+  const nx = dx / d, nz = dz / d; o.x += nx * (R - d); o.z += nz * (R - d);
+  const vn = (v.x - vx) * nx + (v.z - vz) * nz;             // speed towards the rectangle, relative to it
+  if (vn < 0) { v.x -= (1 + p.e) * vn * nx; v.z -= (1 + p.e) * vn * nz; if (-vn > 1.5) thud(-vn); }
+  if (up && (vx || vz)) v.y = Math.max(v.y, up * (.3 + p.e));    // moving things also pop it upward
+}
+function stepProps(dt) {
+  for (const p of props) {
+    const o = p.o.position, v = p.v;
+    v.y -= 9.8 * dt; o.addScaledVector(v, dt);                // gravity
+    if (o.y < p.h) { o.y = p.h; if (v.y < -1) { v.y *= -p.e; if (v.y > 1) thud(v.y); } else v.y = 0; const f = Math.max(0, 1 - p.fr * dt); v.x *= f; v.z *= f; }   // floor bounce + friction
+    for (const s of solids) collideRect(p, s.x0, s.x1, s.z0, s.z1);
+    for (const m of movers) { const q = m.o.position, z = m.ax === 'z'; collideRect(p, q.x - m.hl, q.x + m.hl, q.z - m.hw, q.z + m.hw, z ? 0 : m.cur, z ? m.cur : 0, m.hl > 1 ? 2.5 : 0); }
+    collideRect(p, rig.position.x, rig.position.x, rig.position.z, rig.position.z, pvx, pvz, 1.5, RADIUS);   // you kick it
+    for (const q of props) if (q.o.id > p.o.id) {             // prop vs prop: equal-mass bounce
+      const a = q.o.position, dx = a.x - o.x, dz = a.z - o.z, d = Math.hypot(dx, dz), R = p.r + q.r;
+      if (d < R && d > 1e-5) {
+        const nx = dx / d, nz = dz / d, push = (R - d) / 2; o.x -= nx * push; o.z -= nz * push; a.x += nx * push; a.z += nz * push;
+        const rel = (v.x - q.v.x) * nx + (v.z - q.v.z) * nz;
+        if (rel > 0) { v.x -= rel * nx; v.z -= rel * nz; q.v.x += rel * nx; q.v.z += rel * nz; }
+      }
+    }
+    o.x = clamp(o.x, -70, 70); o.z = clamp(o.z, -40, 40);
+    if (p.roll) { p.o.rotation.x += v.z * dt / p.r; p.o.rotation.z -= v.x * dt / p.r; }
+  }
+}
+// Distant mountains: two rings, cheap, no collision, faded by fog
+for (let i = 0; i < 18; i++) {
+  const a = i / 18 * Math.PI * 2, r = 175 + rnd() * 35, m = makeMountain(35 + rnd() * 30, 45 + rnd() * 50, i % 2 ? 0x7e8fb5 : 0x93a3c4);
+  m.position.x = Math.cos(a) * r; m.position.z = Math.sin(a) * r; scene.add(m);
+}
+
+/* ============ 6c. CULLING (a cheap kind of occlusion) + indoor rooms for sound ============
+   The GPU already hides things behind walls (depth test) and off-screen (frustum culling). On top of that we
+   switch OFF whole groups that are far away, so Quest 2 skips their draw calls and shadows. Radius depends on size. */
+const cull = [];
+scene.children.forEach(c => { if (c.isGroup && c !== rig && c !== avatar) cull.push({ o: c, r: c.userData.legs ? 45 : c.userData.cv ? 999 : (c.userData.fp || []).length > 3 ? 130 : 90 }); });
+function cullStep() { const px = rig.position.x, pz = rig.position.z; for (const c of cull) c.o.visible = Math.hypot(c.o.position.x - px, c.o.position.z - pz) < c.r; }
+const rooms = [[-5.8, 5.8, -16.3, -7.7]];                   // [xmin, xmax, zmin, zmax] of enclosed rooms: bank + shops
+for (const x of [-24, 24]) rooms.push([x - 2.9, x + 2.9, -11.9, -6.1]);   // north shops
+for (const x of [-16, 8, 24]) rooms.push([x - 2.9, x + 2.9, 7.1, 12.9]);  // south shops
+/* ============ 7. INSPECTABLES: walk close and they rise + spin; E / trigger holds them ============ */
+const insp = [];
+// Holdable vegetables on the grocery's display table (grocery = north row, x=-24, z=-9; table is at local (-1.8, .8))
+[['tomato', -26.05, -8.45], ['carrot', -25.55, -8.45], ['cabbage', -26.05, -7.95], ['pumpkin', -25.55, -7.95]].forEach(([k, x, z]) => {
+  const v = makeVeg(k); v.position.set(x, .8, z); scene.add(v);
+  insp.push({ obj: v, x, z, y: .8, r: 1.8, grab: false });    // y = resting height, r = distance at which it lifts
+});
+
+/* ============ 8. AUDIO (Web Audio, no files) ============ */
+let ac, master, lp, wasIn = false, soundOn = true, lastThud = 0;
+function initAudio() {
+  if (ac) { ac.resume(); return; }
+  ac = new (window.AudioContext || window.webkitAudioContext)();
+  master = ac.createGain(); master.gain.value = soundOn ? .5 : 0; lp = ac.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 18000; master.connect(lp); lp.connect(ac.destination);
+  // ambient layer: looping noise through a low-pass filter = soft breeze; a slow LFO makes it swell
+  const buf = ac.createBuffer(1, ac.sampleRate * 2, ac.sampleRate), d = buf.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  const n = ac.createBufferSource(); n.buffer = buf; n.loop = true;
+  const f = ac.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 500;
+  const g = ac.createGain(); g.gain.value = .05;
+  const lfo = ac.createOscillator(), lg = ac.createGain(); lfo.frequency.value = .12; lg.gain.value = .03;
+  lfo.connect(lg); lg.connect(g.gain); n.connect(f); f.connect(g); g.connect(master); n.start(); lfo.start();
+  // pad + melody in C major: Cmaj7 -> Am7 -> Fmaj7 -> G, with a pentatonic melody on top
+  const chords = [[261.6, 329.6, 392, 493.9], [220, 261.6, 329.6, 392], [174.6, 220, 261.6, 329.6], [196, 246.9, 293.7, 392]];
+  const scale = [523.3, 587.3, 659.3, 784, 880, 1046.5];
+  const note = (fq, t0, dur, vol, type) => {
+    const o = ac.createOscillator(), e = ac.createGain(); o.type = type; o.frequency.value = fq;
+    e.gain.setValueAtTime(0, t0); e.gain.linearRampToValueAtTime(vol, t0 + dur * .4); e.gain.linearRampToValueAtTime(0, t0 + dur);
+    o.connect(e); e.connect(master); o.start(t0); o.stop(t0 + dur + .1);
+  };
+  let bar = 0, next = ac.currentTime + .1;
+  setInterval(() => {                                   // schedule a few seconds ahead so audio never stutters
+    while (next < ac.currentTime + 4) {
+      chords[bar++ % 4].forEach(fq => note(fq, next, 7, .05, 'sine'));
+      for (let k = 0; k < 4; k++) if (Math.random() < .75) note(scale[Math.random() * scale.length | 0], next + k * 1.5 + Math.random() * .3, 1.8, .035, 'triangle');
+      next += 6;
+    }
+  }, 1000);
+}
+function setSound(on) {
+  soundOn = on; if (on) initAudio();
+  if (master) master.gain.setTargetAtTime(on ? .5 : 0, ac.currentTime, .1);
+  $('snd').textContent = 'Sound: ' + (on ? 'on' : 'off');
+}
+$('snd').onclick = () => setSound(!soundOn);
+
+/* ============ 9. INPUT ============ */
+const keys = {}; let pitch = 0, third = false, started = false, locked = false, drag = false;
+const cvs = renderer.domElement;
+function start() {
+  $('overlay').style.display = 'none'; started = true;
+  cvs.requestPointerLock?.(); setSound(true);           // audio only starts after this click
+}
+$('overlay').onclick = start;
+cvs.addEventListener('click', () => { if (started && !locked) cvs.requestPointerLock?.(); });
+document.addEventListener('pointerlockchange', () => locked = document.pointerLockElement === cvs);
+addEventListener('mousedown', () => drag = true); addEventListener('mouseup', () => drag = false);   // click-drag fallback
+addEventListener('mousemove', e => {
+  if (!started || renderer.xr.isPresenting || !(locked || drag)) return;
+  rig.rotation.y -= e.movementX * .0025;
+  pitch = THREE.MathUtils.clamp(pitch - e.movementY * .0025, -1.2, 1.2);
+});
+addEventListener('wheel', e => {                         // scroll zoom = change field of view (desktop only)
+  if (renderer.xr.isPresenting) return;
+  camera.fov = THREE.MathUtils.clamp(camera.fov + e.deltaY * .03, 30, 90); camera.updateProjectionMatrix();
+});
+addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (e.code === 'KeyF' && !renderer.xr.isPresenting) third = !third;
+  if (e.code === 'KeyE') toggleGrab();
+  if (e.code === 'KeyM') setSound(!soundOn);
+  if (e.code === 'Enter' && !renderer.xr.isPresenting) aimAt();
+  if (KS.scr === 'aad') { if (/^(Digit|Numpad)\d$/.test(e.code)) kpress(e.key); if (e.code === 'Backspace') kpress('⌫'); }   // type Aadhaar digits on a keyboard
+});
+addEventListener('keyup', e => keys[e.code] = false);
+addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+
+// Head position + facing direction (from the headset in VR, from yaw/pitch on desktop)
+const hp = new THREE.Vector3(), hd = new THREE.Vector3(), tmp = new THREE.Vector3();
+function headPose() {
+  if (renderer.xr.isPresenting) { const c = renderer.xr.getCamera(); c.getWorldPosition(hp); c.getWorldDirection(hd); }
+  else { const y = rig.rotation.y; hp.copy(rig.position); hd.set(-Math.sin(y) * Math.cos(pitch), Math.sin(pitch), -Math.cos(y) * Math.cos(pitch)); }
+}
+function toggleGrab() {                                  // pick up / put back the nearest inspectable
+  const held = insp.find(i => i.grab); if (held) { held.grab = false; return; }
+  let best = null, bd = 3.5;
+  for (const i of insp) { const d = Math.hypot(rig.position.x - i.x, rig.position.z - i.z); if (d < bd) { bd = d; best = i; } }
+  if (best) best.grab = true;
+}
+
+/* VR: sessions, controllers, sticks */
+for (let i = 0; i < 2; i++) { const c = renderer.xr.getController(i); c.addEventListener('selectstart', onSelect); c.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(0, 0, -3)]), new THREE.LineBasicMaterial({ color: 0xffffff }))); /* white pointer ray */ rig.add(c); }
+renderer.xr.addEventListener('sessionstart', () => {
+  rig.position.y = 0; camera.position.set(0, 0, 0); camera.rotation.set(0, 0, 0);   // headset supplies head height
+  pitch = 0; third = false; avatar.visible = false; $('overlay').style.display = 'none'; started = true; setSound(true);
+});
+renderer.xr.addEventListener('sessionend', () => { rig.position.y = EYE; });
+let snapLock = false; const prevBtn = {};
+function snapTurn(a) {                                   // rotate the rig around the HEAD so you don't swing sideways
+  headPose(); const ox = hp.x - rig.position.x, oz = hp.z - rig.position.z, c = Math.cos(a), s = Math.sin(a);
+  rig.rotation.y += a; rig.position.x += ox - (ox * c + oz * s); rig.position.z += oz - (-ox * s + oz * c);
+}
+function readSticks() {
+  let sx = 0, sy = 0; const ses = renderer.xr.getSession(); if (!ses) return [0, 0];
+  for (const src of ses.inputSources) {
+    const gp = src.gamepad; if (!gp) continue;
+    const ax = gp.axes[2] ?? gp.axes[0] ?? 0, ay = gp.axes[3] ?? gp.axes[1] ?? 0;
+    if (src.handedness === 'left') { sx = Math.abs(ax) > .15 ? ax : 0; sy = Math.abs(ay) > .15 ? -ay : 0; }
+    if (src.handedness === 'right') {
+      if (Math.abs(ax) > .7 && !snapLock) { snapTurn(-Math.sign(ax) * Math.PI / 6); snapLock = true; }   // 30° snap turn
+      else if (Math.abs(ax) < .3) snapLock = false;
+    }
+    const b = gp.buttons[4]?.pressed;                   // A (right) / X (left) face button
+    if (b && !prevBtn[src.handedness]) setSound(!soundOn);
+    prevBtn[src.handedness] = b;
+  }
+  return [sx, sy];
+}
+
+/* ============ 9b. FUNCTIONAL KIOSK ============
+   The kiosk screen is a canvas. draw() repaints it for the current screen (KS.scr) and records each button's
+   rectangle in `btns`. A ray (from your eyes on desktop, from the controller in VR) hits the screen mesh, the hit's
+   UV coordinate becomes canvas pixels, and we run the matching button's function. */
+const AI_ENDPOINT = '';   // OPTIONAL: URL of YOUR server that calls an LLM. It receives {answers, schemes} and returns {ids:[...]}. Empty = built-in matcher.
+const SCHEMES = [         // a = [age, occupation, income, gender] (answer indexes from QS below); w = how specific the scheme is
+  { n: 'PM-KISAN', b: 'Rs 6,000 / year income support', d: ['Land record', 'Bank passbook'], w: 9, ok: a => a[1] == 0 },
+  { n: 'PM Fasal Bima Yojana', b: 'Low-premium crop insurance', d: ['Land record', 'Bank passbook'], w: 8, ok: a => a[1] == 0 },
+  { n: 'Kisan Credit Card', b: 'Farm loans at low interest', d: ['Land record', 'Photo'], w: 7, ok: a => a[1] == 0 },
+  { n: 'Ayushman Bharat PM-JAY', b: 'Health cover Rs 5 lakh / family', d: ['Ration card', 'Income certificate'], w: 8, ok: a => a[2] <= 1 },
+  { n: 'PM Ujjwala Yojana', b: 'Free LPG connection for women', d: ['Ration card', 'Bank passbook'], w: 8, ok: a => a[3] == 0 && a[2] <= 1 },
+  { n: 'PM Mudra Yojana', b: 'Business loan up to Rs 10 lakh', d: ['Business proof', 'Bank statement'], w: 8, ok: a => a[1] == 2 },
+  { n: 'PM SVANidhi', b: 'Street-vendor working-capital loan', d: ['Vendor certificate', 'Bank passbook'], w: 7, ok: a => a[1] == 2 && a[2] <= 1 },
+  { n: 'Stand-Up India', b: 'Loan Rs 10 lakh - 1 crore for women', d: ['Business plan', 'Bank statement'], w: 7, ok: a => a[1] == 2 && a[3] == 0 },
+  { n: 'PM Vishwakarma', b: 'Artisan toolkit, training and loan', d: ['Trade proof', 'Bank passbook'], w: 6, ok: a => a[1] == 3 && a[2] <= 2 },
+  { n: 'National Scholarship Portal', b: 'Merit / means-based scholarships', d: ['Marksheet', 'Income certificate'], w: 8, ok: a => a[1] == 1 && a[2] <= 2 },
+  { n: 'Sukanya Samriddhi', b: 'High-interest savings, girl child', d: ['Birth certificate', 'Parent ID'], w: 9, ok: a => a[0] == 0 && a[3] == 0 },
+  { n: 'Atal Pension Yojana', b: 'Pension Rs 1,000 - 5,000 / month', d: ['Bank passbook', 'Mobile number'], w: 6, ok: a => a[0] == 1 },
+  { n: 'PM Suraksha Bima', b: 'Accident cover Rs 2 lakh, Rs 20/yr', d: ['Bank passbook', 'Photo'], w: 5, ok: a => a[0] >= 1 && a[0] <= 3 },
+  { n: 'PM Jeevan Jyoti Bima', b: 'Life cover Rs 2 lakh / year', d: ['Bank passbook', 'Photo'], w: 5, ok: a => a[0] >= 1 && a[0] <= 2 },
+  { n: 'NSAP Old-Age Pension', b: 'Monthly pension for seniors', d: ['Age proof', 'BPL card'], w: 9, ok: a => a[0] == 3 && a[2] <= 1 },
+  { n: 'PM Awas Yojana', b: 'Subsidy for an affordable home', d: ['Income certificate', 'Address proof'], w: 6, ok: a => a[2] <= 2 && a[0] >= 1 },
+  { n: 'Skill India (PMKVY)', b: 'Free skill training + certificate', d: ['Education proof', 'Photo'], w: 6, ok: a => a[0] == 1 && (a[1] == 3 || a[1] == 1) },
+];
+const QS = [['How old are you?', ['Under 18', '18 - 35', '36 - 59', '60 or above']], ['What do you do?', ['Farmer', 'Student', 'Small business', 'Worker / other']],
+  ['Household income a year?', ['Below Rs 1.5 lakh', 'Rs 1.5 - 3 lakh', 'Rs 3 - 8 lakh', 'Above Rs 8 lakh']], ['You are a...', ['Woman / girl', 'Man / boy', 'Prefer not to say']]];
+async function recommend(a) {                              // 1) your LLM server if configured, 2) built-in rule matcher
+  if (AI_ENDPOINT) try {
+    const r = await fetch(AI_ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ answers: a, schemes: SCHEMES.map(x => x.n) }) });
+    const l = (await r.json()).ids.map(i => SCHEMES[i]).filter(Boolean); if (l.length) return l.slice(0, 5);
+  } catch (e) { /* fall back to local matching */ }
+  return SCHEMES.filter(x => x.ok(a)).sort((p, q) => q.w - p.w).slice(0, 5);
+}
+
+const KS = { scr: 'home', a: [], q: 0, list: [], pick: null, docs: {}, aad: '', prog: 0, msg: '', ref: '' };
+const kc = KIOSK.userData.cv.getContext('2d'), ktex = KIOSK.userData.tex; let btns = [];
+const B = (x, y, w, h, col, t, sub, fn, dim) => {            // draw a button and remember where it is
+  if (!dim) btns.push({ x, y, w, h, fn });
+  kc.fillStyle = dim ? '#b8c2cf' : col; kc.beginPath(); kc.roundRect(x, y, w, h, 16); kc.fill();
+  kc.fillStyle = '#fff'; kc.textAlign = 'center'; kc.font = 'bold 24px sans-serif'; kc.fillText(t, x + w / 2, y + (sub ? h / 2 - 2 : h / 2 + 8));
+  if (sub) { kc.font = '16px sans-serif'; kc.fillText(sub, x + w / 2, y + h / 2 + 22); }
+};
+const T = (t, y, sz = 22, col = '#1d3a6e') => { kc.fillStyle = col; kc.textAlign = 'center'; kc.font = 'bold ' + sz + 'px sans-serif'; kc.fillText(t, 256, y); };
+const mask = () => 'XXXX XXXX ' + KS.aad.slice(-4);
+const apps = () => { try { return JSON.parse(localStorage.getItem('kioskApps') || '[]'); } catch (e) { return []; } };
+function kpress(k) { if (k === '⌫') KS.aad = KS.aad.slice(0, -1); else if (KS.aad.length < 12) KS.aad += k; KS.msg = ''; draw(); }
+function upload(d) {                                        // desktop: real file picker (file stays on your device). VR: demo upload.
+  if (renderer.xr.isPresenting) { KS.docs[d] = 'demo-file'; draw(); return; }
+  const i = $('file'); i.onchange = () => { if (i.files[0]) { KS.docs[d] = i.files[0].name.slice(0, 24); draw(); } i.value = ''; }; i.click();
+}
+function scanAndLink() {
+  if (KS.aad.length < 12 || /^[01]/.test(KS.aad)) { KS.msg = 'Enter a valid 12-digit Aadhaar (starts 2-9)'; draw(); return; }
+  KS.scr = 'scan'; KS.prog = 0;
+  const id = setInterval(() => {                            // animated "scan", then link the Aadhaar to the chosen scheme
+    KS.prog += .12; if (KS.prog < 1) { draw(); return; }
+    clearInterval(id); KS.ref = 'APP-' + Date.now().toString(36).toUpperCase().slice(-6);
+    try { localStorage.setItem('kioskApps', JSON.stringify([{ ref: KS.ref, n: KS.pick.n, a: mask() }, ...apps()].slice(0, 5))); } catch (e) { }   // only the MASKED number is saved
+    KS.scr = 'done'; draw();
+  }, 150);
+  draw();
+}
+function draw() {
+  btns = []; const gr = kc.createLinearGradient(0, 0, 0, 730); gr.addColorStop(0, '#cfe6ff'); gr.addColorStop(1, '#f4f9ff'); kc.fillStyle = gr; kc.fillRect(0, 0, 512, 730);
+  const go = sc => () => { KS.scr = sc; draw(); }, home = () => B(160, 650, 192, 52, '#7b8794', 'Home', '', go('home')), s = KS.scr;
+  const start = () => { KS.a = []; KS.q = 0; KS.scr = 'q'; draw(); };
+  if (s === 'home') {
+    T('Find. Apply. Track.', 90, 42); T('Government Schemes Made Simple', 130, 20, '#44556f');
+    B(34, 180, 444, 110, '#3b82d6', 'Find My Schemes', 'Answer 4 quick questions (smart match)', start);
+    B(34, 310, 444, 110, '#35a36a', 'Apply for a Scheme', KS.pick ? KS.pick.n : 'Pick a scheme first', () => KS.pick ? go('docs')() : start());
+    B(34, 440, 444, 110, '#e6a23c', 'Application Status', 'See your linked applications', go('status'));
+    T('Sabka Saath · Sabka Vikas', 640, 19, '#44556f'); T('Sabka Vishwas · Sabka Prayas', 668, 19, '#44556f');
+  } else if (s === 'q') {
+    const [q, o] = QS[KS.q]; T('Question ' + (KS.q + 1) + ' of ' + QS.length, 70, 20, '#44556f'); T(q, 125, 34);
+    o.forEach((t, i) => B(44, 170 + i * 105, 424, 88, '#3b82d6', t, '', () => {
+      KS.a.push(i); if (++KS.q < QS.length) { draw(); return; }
+      KS.scr = 'wait'; draw(); recommend(KS.a).then(l => { KS.list = l; KS.scr = 'res'; draw(); });
+    }));
+    home();
+  } else if (s === 'wait') { T('Matching schemes for you...', 360, 30);
+  } else if (s === 'res') {
+    T(KS.list.length ? 'Schemes for you' : 'No close match found', 55, 34);
+    KS.list.forEach((x, i) => B(30, 85 + i * 100, 452, 90, ['#3b82d6', '#35a36a', '#e6a23c'][i % 3], x.n, x.b, () => { KS.pick = x; KS.docs = {}; go('docs')(); }));
+    T('Indicative only - verify on the official portal', 622, 16, '#44556f'); home();
+  } else if (s === 'docs') {
+    T(KS.pick.n, 60, 30); T('Upload the required documents', 100, 20, '#44556f');
+    KS.pick.d.forEach((d, i) => B(34, 140 + i * 105, 444, 90, KS.docs[d] ? '#35a36a' : '#3b82d6', d, KS.docs[d] ? 'Uploaded: ' + KS.docs[d] : 'Tap to upload', () => upload(d)));
+    B(34, 520, 444, 80, '#e6a23c', 'Continue to Aadhaar', '', () => { KS.aad = ''; KS.msg = ''; go('aad')(); }, !KS.pick.d.every(d => KS.docs[d]));
+    T('Files stay on your device (demo)', 628, 16, '#44556f'); home();
+  } else if (s === 'aad') {
+    T('Scan Aadhaar and link', 55, 30); T('Linking to: ' + KS.pick.n, 85, 18, '#44556f');
+    kc.fillStyle = '#fff'; kc.beginPath(); kc.roundRect(50, 100, 412, 62, 12); kc.fill();
+    T((KS.aad + '____________').slice(0, 12).replace(/(.{4})/g, '$1 ').trim(), 145, 34, '#1d3a6e'); T(KS.msg, 190, 16, '#c0392b');
+    ['1', '2', '3', '4', '5', '6', '7', '8', '9', '⌫', '0', 'Scan'].forEach((k, i) =>
+      B(50 + (i % 3) * 140, 205 + (i / 3 | 0) * 82, 132, 72, k === 'Scan' ? '#35a36a' : '#3b82d6', k, '', () => k === 'Scan' ? scanAndLink() : kpress(k)));
+    home();
+  } else if (s === 'scan') {
+    T('Scanning Aadhaar...', 300, 32); kc.fillStyle = '#dbe8fb'; kc.fillRect(56, 340, 400, 26); kc.fillStyle = '#35a36a'; kc.fillRect(56, 340, 400 * Math.min(KS.prog, 1), 26);
+  } else if (s === 'done') {
+    T('Application submitted', 130, 36, '#1a7f43'); T(KS.pick.n, 200, 28); T('Aadhaar ' + mask() + ' linked', 250, 22, '#44556f');
+    T('Ref: ' + KS.ref, 300, 26); T('Status: Under review', 345, 22, '#44556f'); B(34, 450, 444, 80, '#3b82d6', 'Check Status', '', go('status')); home();
+  } else if (s === 'status') {
+    const l = apps(); T('Your applications', 60, 34); if (!l.length) T('None yet - find a scheme first', 200, 22, '#44556f');
+    l.forEach((x, i) => { T(x.ref + ' · ' + x.n, 130 + i * 90, 22); T(x.a + ' · Under review', 160 + i * 90, 17, '#44556f'); }); home();
+  }
+  ktex.needsUpdate = true;
+}
+const ray = new THREE.Raycaster(), tm = new THREE.Matrix4();
+function aimAt(ctrl) {                                      // cast a ray at the kiosk screen; press the button under it
+  if (ctrl) { tm.identity().extractRotation(ctrl.matrixWorld); ray.ray.origin.setFromMatrixPosition(ctrl.matrixWorld); ray.ray.direction.set(0, 0, -1).applyMatrix4(tm); }
+  else ray.setFromCamera({ x: 0, y: 0 }, camera);
+  const h = ray.intersectObject(KIOSK.userData.scr)[0]; if (!h || h.distance > 4) return false;
+  const x = h.uv.x * 512, y = (1 - h.uv.y) * 730, b = btns.find(b => x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h);
+  if (b) b.fn(); return true;
+}
+function onSelect(e) { if (!aimAt(e.target)) toggleGrab(); }   // VR trigger: press kiosk button if pointing at it, else hold object
+addEventListener('click', () => { if (started && !renderer.xr.isPresenting) aimAt(); });
+draw();
+
+/* ============ 10. MAIN LOOP ============ */
+const clock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  const dt = Math.min(clock.getDelta(), .05), t = clock.elapsedTime, xr = renderer.xr.isPresenting;
+  let sx = 0, sy = 0, speed = 2.2;
+  if (xr) { [sx, sy] = readSticks(); speed = 2.5; }
+  else if (started) {
+    sx = (keys.KeyD || keys.ArrowRight ? 1 : 0) - (keys.KeyA || keys.ArrowLeft ? 1 : 0);
+    sy = (keys.KeyW || keys.ArrowUp ? 1 : 0) - (keys.KeyS || keys.ArrowDown ? 1 : 0);
+    if (keys.ShiftLeft || keys.ShiftRight) speed = 5;
+  }
+  headPose();
+  const fl = Math.hypot(hd.x, hd.z) || 1, fx = hd.x / fl, fz = hd.z / fl;   // flat forward; right = (-fz, fx)
+  const moving = sx || sy;
+  pvx = pvz = 0;
+  if (moving) { const l = Math.hypot(sx, sy) > 1 ? Math.hypot(sx, sy) : 1; pvx = (fx * sy - fz * sx) / l * speed; pvz = (fz * sy + fx * sx) / l * speed; move(pvx * dt, pvz * dt); }
+
+  // camera: first person (inside rig) or third person (pulled back behind the avatar)
+  if (!xr) {
+    rig.position.y = EYE; camera.rotation.x = pitch;
+    camera.position.set(0, third ? .6 : 0, third ? 3.5 : 0);
+    avatar.visible = third; avatar.position.set(rig.position.x, 0, rig.position.z); avatar.rotation.y = rig.rotation.y + Math.PI;   // face away from the camera
+    const s = moving ? Math.sin(t * 8) * .5 : 0; avatar.userData.legs[0].rotation.x = s; avatar.userData.legs[1].rotation.x = -s; avatar.userData.arms.forEach((a, k) => a.rotation.x = k ? s : -s);
+  }
+
+  // movers: cars and walkers look ahead, brake or wait for anything in their way (other cars, people, YOU), then move
+  for (const m of movers) {
+    const o = m.o, ax = m.ax || 'x'; m.v0 ??= m.v; m.cur ??= m.v0;         // v0 = wanted speed, cur = actual speed
+    if (m.lz !== undefined) {   // walkers: step to their RIGHT around anything in the way, drift back to their lane once past it
+      const dir = Math.sign(m.v0);
+      if (!m.want && !clearAhead(m, 0)) { for (const side of [dir * .9, -dir * .9]) if (clearAhead(m, side) && !solidAt(o.position.x, m.lz + side) && !solidAt(o.position.x + dir, m.lz + side)) { m.want = side; break; } }
+      else if (m.want && clearAhead(m, 0, .8)) m.want = 0;
+      m.lat += clamp(m.want - m.lat, -1.2 * dt, 1.2 * dt); o.position.z = m.lz + m.lat;
+    }
+    const free = clearAhead(m, m.lat || 0), goal = free ? m.v0 : (m.want ? m.v0 * .4 : 0);   // keep walking slowly while sidestepping
+    m.cur += (goal - m.cur) * Math.min(1, dt * (free ? 1.5 : 6));   // accelerate gently, brake hard
+    o.position[ax] += m.cur * dt;
+    if (o.position[ax] > m.max || o.position[ax] < m.min) {
+      if (m.wrap) o.position[ax] = m.v0 > 0 ? m.min : m.max;
+      else { o.position[ax] = o.position[ax] > m.max ? m.max : m.min; m.v0 *= -1; m.cur = 0; }
+    }
+    if (o.userData.legs) {
+      const dr = Math.sign(m.v0); o.rotation.y = ax === 'x' ? dr * Math.PI / 2 : (dr > 0 ? 0 : Math.PI);   // face the walking direction
+      const s = Math.sin(t * 5 + m.ph) * .5 * Math.min(1, Math.abs(m.cur));                            // swing fades when they stop
+      o.userData.legs[0].rotation.x = s; o.userData.legs[1].rotation.x = -s; o.userData.arms.forEach((a, k) => a.rotation.x = k ? s : -s);
+    }
+  }
+  stepProps(dt); pushOut();                                    // physics props + keep you from being inside a car
+  if (frame++ % 10 === 0) cullStep();
+  if (lp) { const inside = rooms.some(r => hp.x > r[0] && hp.x < r[1] && hp.z > r[2] && hp.z < r[3]); if (inside !== wasIn) { wasIn = inside; lp.frequency.setTargetAtTime(inside ? 900 : 18000, ac.currentTime, .15); } }   // muffled sound indoors
+  // inspectables: rise + spin when near, glide to your face when held
+  let nearAny = false;
+  for (const it of insp) {
+    const near = Math.hypot(rig.position.x - it.x, rig.position.z - it.z) < it.r; nearAny ||= near;
+    tmp.set(it.x, it.y + (near ? .7 : 0), it.z);
+    if (it.grab) tmp.set(hp.x + hd.x * .7, hp.y + hd.y * .7 - .1, hp.z + hd.z * .7);
+    it.obj.position.lerp(tmp, Math.min(1, dt * 6));
+    if (near || it.grab) it.obj.rotation.y += dt * .6;
+  }
+  const nk = Math.hypot(rig.position.x - 12, rig.position.z + 6.3) < 3.5;
+  $('hint').textContent = nk ? 'Aim the dot at the kiosk screen, then click / press Enter' : 'Press E (or VR trigger) to hold the object';
+  $('hint').style.display = (nearAny || nk) && !xr ? 'block' : 'none';
+
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>
