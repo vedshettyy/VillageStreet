@@ -42,21 +42,21 @@
   <b>Controls</b><br>
   Desktop: WASD / arrows walk · Shift faster · mouse look (or drag) · scroll zoom<br>
   F first/third person · E hold object · M sound<br>Kiosk: aim the dot at its screen, click or Enter (VR: point + trigger)<br>
-  VR: left stick glide · right stick snap-turn 30° · A/X sound · trigger holds object
+  VR: left stick glide · right stick snap-turn 30° · A/X sound · trigger = press kiosk / hold object · grip or stick-click = hold · B/Y = back to start
 </div>
- 
+
 <!-- importmap: tells the browser where "three" lives, so we can write: import ... from 'three' -->
 <script type="importmap">
 {"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
 "three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}
 </script>
- 
+
 <script type="module">
 import * as THREE from 'three';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';   // boxes with soft bevelled edges
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';       // fake studio light for realistic reflections
- 
+
 /* ============ 1. RENDERER, SCENE, RIG ============ */
 const EYE = 1.6, RADIUS = 0.35;          // desktop eye height; player collision radius (m)
 const $ = id => document.getElementById(id);
@@ -72,7 +72,7 @@ renderer.xr.setReferenceSpaceType('local-floor');      // y=0 is the real floor 
 renderer.xr.setFoveation(1);                           // Quest perf: blur edges slightly
 document.body.appendChild(renderer.domElement);
 $('vrwrap').appendChild(VRButton.createButton(renderer));
- 
+
 const SKY = 0xf6dcc4;                                   // soft peach morning haze
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(SKY);
@@ -86,14 +86,14 @@ const sky = new THREE.Mesh(new THREE.SphereGeometry(400, 32, 16), new THREE.Shad
   fragmentShader: 'uniform vec3 top,hor;varying vec3 p;void main(){float h=clamp(normalize(p).y*1.6,0.,1.);gl_FragColor=vec4(mix(hor,top,pow(h,.7)),1.);#include <tonemapping_fragment>\n#include <colorspace_fragment>\n}'
 }));
 sky.renderOrder = -1; scene.add(sky);                // distance fog: far things melt into the sky
- 
+
 const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.1, 500);
 /* RIG: a group that holds the camera (and VR controllers). We move/turn the RIG, not the camera.
    Desktop: rig.y = 1.6 gives eye height. VR: rig.y = 0 because the headset adds real head height. */
 const rig = new THREE.Group();
 rig.add(camera); scene.add(rig);
 rig.position.set(0, EYE, 3.8);   // start on the south pavement, looking at the bank (z=8 was inside a shop!)
- 
+
 /* ============ 2. LIGHTING ============ */
 scene.add(new THREE.HemisphereLight(0xfff1e0, 0xb7c08a, 1.1));   // sky colour above, ground bounce below
 const sun = new THREE.DirectionalLight(0xffd9a8, 2.4);           // low warm sun = morning
@@ -103,7 +103,7 @@ sun.shadow.mapSize.set(location.search.includes('lite') ? 1024 : 2048, location.
 Object.assign(sun.shadow.camera, { left: -50, right: 50, top: 50, bottom: -50, near: 1, far: 140 });
 sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.03;
 scene.add(sun);
- 
+
 /* ============ 3. HELPERS ============ */
 let seed = 7; const rnd = () => (seed = seed * 16807 % 2147483647) / 2147483647;   // repeatable "random"
 const mats = {};                                          // material cache: same colour = same material (saves memory)
@@ -120,7 +120,7 @@ function noiseTex(r, g, b, v, rx, ry = rx, size = 128) {         // procedural s
   const t = ctex(cv); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(rx, ry); return t;
 }
 const GRAIN = noiseTex(238, 238, 238, 36, 1, 1, 64);               // faint plaster grain on every surface
- 
+
 /* ============ 4. COLLISION ============
    `solids` = list of rectangles (footprints) seen from above. Each factory describes its footprint
    in userData.fp as [centreX, centreZ, width, depth] in LOCAL space; place() converts to world space.
@@ -138,16 +138,17 @@ function place(g, x, z, ry = 0) {                         // put a factory-made 
 }
 const blocked = (x, z) => solids.some(s => x > s.x0 - RADIUS && x < s.x1 + RADIUS && z > s.z0 - RADIUS && z < s.z1 + RADIUS) ||
   movers.some(m => Math.abs(x - m.o.position.x) < m.hl + RADIUS && Math.abs(z - m.o.position.z) < m.hw + RADIUS);   // moving things count as obstacles (only while they are there!)
-function move(dx, dz) {                                   // test X and Z separately => you slide along walls
+function move(dx, dz) {
+  if (!isFinite(dx + dz)) return;   // never let a bad number teleport you away                                   // test X and Z separately => you slide along walls
   const p = rig.position;
   if (!blocked(p.x + dx, p.z)) p.x += dx;
   if (!blocked(p.x, p.z + dz)) p.z += dz;
   p.x = THREE.MathUtils.clamp(p.x, -70, 70); p.z = THREE.MathUtils.clamp(p.z, -40, 40);
 }
- 
+
 /* ============ 5. FACTORIES (one function = one kind of object, reusable many times) ============ */
 const PASTELS = [0xf2c6a0, 0xe9a6a6, 0x9fd3c7, 0xf5e6a8, 0xb5c7ec, 0xf0b27a];
- 
+
 function makeBuilding(w, d, h, col) {                     // small shop/house; door on the +z face
   const g = new THREE.Group(); g.userData.fp = [[0, 0, w, d]];
   box(g, w, h, d, col, 0, h / 2, 0);
@@ -162,7 +163,7 @@ function makeBuilding(w, d, h, col) {                     // small shop/house; d
   cyl(g, .5, .5, .9, 0x222233, w / 4, h + .7, 0, 8);                        // rooftop water tank
   return g;
 }
- 
+
 function makeTree(big) {
   const g = new THREE.Group(); g.userData.fp = [[0, 0, .5, .5]];
   cyl(g, .15, .22, 1.8, 0x6b4a2f, 0, .9, 0, 6);
@@ -170,7 +171,7 @@ function makeTree(big) {
   add(g, new THREE.IcosahedronGeometry(r, 2), gc, 0, 2.6, 0); add(g, new THREE.IcosahedronGeometry(r * .7, 2), 0x4f8a48, r * .5, 3.2, r * .3); add(g, new THREE.IcosahedronGeometry(r * .6, 2), 0x8cc070, -r * .5, 3.0, -r * .3);
   return g;
 }
- 
+
 function makeBike(col) {                                  // motorbike, faces +x
   const g = new THREE.Group(); g.userData.fp = [[0, 0, 1.6, .5]];
   for (const x of [-.55, .55]) cyl(g, .3, .3, .12, 0x222222, x, .3, 0, 10).rotation.x = Math.PI / 2;
@@ -179,7 +180,7 @@ function makeBike(col) {                                  // motorbike, faces +x
   box(g, .1, .1, .6, 0x333333, .5, .98, 0);
   return g;
 }
- 
+
 function makeCar(col) {                                   // faces +x, moving (no footprint)
   const g = new THREE.Group(), paint = { metalness: .55, roughness: .3, envMapIntensity: 1 };
   rbox(g, 3.6, .6, 1.7, col, 0, .62, 0, .2, paint); rbox(g, 1.9, .5, 1.5, 0x8fc3dc, -.2, 1.15, 0, .2, { metalness: .9, roughness: .08, envMapIntensity: 1.2 });
@@ -188,7 +189,7 @@ function makeCar(col) {                                   // faces +x, moving (n
   for (const z of [-.6, .6]) { box(g, .06, .14, .3, 0xfff6c8, 1.8, .7, z, { emissive: 0xffeeaa, emissiveIntensity: 1 }); box(g, .06, .12, .3, 0xd62828, -1.8, .7, z, { emissive: 0x880000, emissiveIntensity: .8 }); }
   return g;
 }
- 
+
 function makePerson(shirt) {                               // rounded (capsule) body, swinging arms and legs
   const g = new THREE.Group(), skin = 0xc68642, cap = (p, r, len, c, x, y, z) => add(p, new THREE.CapsuleGeometry(r, len, 6, 14), c, x, y, z);
   g.userData.legs = [-.12, .12].map(x => { const p = new THREE.Group(); p.position.set(x, .8, 0); cap(p, .085, .62, 0x3b3b58, 0, -.4, 0); g.add(p); return p; });
@@ -198,7 +199,7 @@ function makePerson(shirt) {                               // rounded (capsule) 
   ball(g, .17, skin, 0, 1.6, 0); ball(g, .18, 0x2a1d14, 0, 1.66, -.03); box(g, .06, .06, .08, 0xb5733a, 0, 1.58, .17);
   return g;
 }
- 
+
 function makeStall(canopy) {                              // hawker's stall + hawker; front faces +z
   const g = new THREE.Group(); g.userData.fp = [[0, -.2, 1.6, 1.4]];
   box(g, 1.6, .9, .8, 0x8a5a33, 0, .45, 0);
@@ -208,7 +209,7 @@ function makeStall(canopy) {                              // hawker's stall + ha
   const h = makePerson(0x8e44ad); h.position.set(0, 0, -.8); g.add(h);
   return g;
 }
- 
+
 function makeATM() {                                      // ATM kiosk; screen on +z face
   const g = new THREE.Group(); g.userData.fp = [[0, 0, 1.1, .9]];
   rbox(g, 1.1, 2.2, .9, 0x3a5a8a, 0, 1.1, 0, .08, { metalness: .4, roughness: .35, envMapIntensity: .8 });
@@ -217,7 +218,7 @@ function makeATM() {                                      // ATM kiosk; screen o
   box(g, 1.4, .12, 1.2, 0xe4572e, 0, 2.3, .15);
   return g;
 }
- 
+
 function makeBank() {                                     // THE main feature: walls, door gap, counter, office desks
   const g = new THREE.Group(), W = 12, D = 9, H = 4.2, T = .3; g.userData.fp = [];
   const wall = (w, d, x, z) => { box(g, w, H, d, 0xe8d9b8, x, H / 2, z); g.userData.fp.push([x, z, w, d]); };
@@ -253,7 +254,7 @@ function makeBank() {                                     // THE main feature: w
   cyl(g, .25, .2, .4, 0xb5651d, 5.3, .2, 3.6, 7); add(g, new THREE.IcosahedronGeometry(.4, 2), 0x4f9a4f, 5.3, .8, 3.6);       // plant
   return g;
 }
- 
+
 /* ---- helpers & new factories ---- */
 function signMesh(txt, bg, fg, w, h, px = 40) {            // text sign drawn on a canvas (no image files)
   const cv = document.createElement('canvas'); cv.width = 512; cv.height = Math.round(512 * h / w);
@@ -282,7 +283,7 @@ const sitter = (p, col, x, z, ry) => {                      // seated person: le
 };
 const chairAt = (p, x, z, ry, c) => { const ch = makeChair(c); ch.position.set(x, 0, z); ch.rotation.y = ry; p.add(ch); };
 const bystander = (col, x, z, ry) => { const p = makePerson(col); p.userData.fp = [[0, 0, .5, .5]]; return place(p, x, z, ry); };   // static, solid person
- 
+
 function makeShop(name, signCol) {                          // ENTERABLE 6x6 shop: door gap, shelves, counter, shopkeeper
   const g = new THREE.Group(), W = 6, D = 6, H = 4, T = .25, col = PASTELS[name.length % 6]; g.userData.fp = [];
   const wall = (w, d, x, z) => { box(g, w, H, d, col, x, H / 2, z); g.userData.fp.push([x, z, w, d]); };
@@ -303,7 +304,7 @@ function makeShop(name, signCol) {                          // ENTERABLE 6x6 sho
   stander(g, 0x2b8a6e, 0.2, -.2, Math.PI);                  // a customer
   return g;
 }
- 
+
 function makeKiosk() {                                      // Govt. information kiosk (after the reference photo)
   const g = new THREE.Group(); g.userData.fp = [[0, 0, .9, .7]];
   const CREAM = 0xece6d8, DARK = 0x4a4540, DEPTH = .74, TILT = .058, glow = { emissive: 0xffb347, emissiveIntensity: 2 };
@@ -353,7 +354,7 @@ function makeKiosk() {                                      // Govt. information
   const hs = signMesh('GOVT. INFORMATION KIOSK', '#1d3557', '#ffffff', 1.5, .3, 34); hs.position.set(0, 2.42, .134); g.add(hs);
   return g;
 }
- 
+
 function makeVeg(kind) {                                    // small crate of vegetables (holdable)
   const g = new THREE.Group(); box(g, .4, .12, .4, 0x8a5a33, 0, .06, 0);
   if (kind === 'tomato') for (let k = 0; k < 5; k++) ball(g, .09, 0xd62828, -.1 + (k % 3) * .1, .2, -.06 + (k > 2 ? .12 : 0));
@@ -378,7 +379,7 @@ function makeMountain(r, h, col) {                          // jittered cone wit
   const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, flatShading: true }));
   m.position.y = h / 2 - 2; return m;
 }
- 
+
 /* ============ 6. BUILD THE WORLD (factories placed in loops) ============ */
 // Ground, road (5 m wide = narrow), pavements, plaza in front of bank, dashed centre line
 const ground = new THREE.Mesh(new THREE.PlaneGeometry(700, 700), new THREE.MeshStandardMaterial({ map: noiseTex(150, 176, 104, 60, 150), roughness: 1 }));
@@ -388,10 +389,10 @@ const pavMat = new THREE.MeshStandardMaterial({ map: noiseTex(205, 198, 186, 30,
 for (const z of [-3.75, 3.75]) box(scene, 140, .12, 2.5, 0xffffff, 0, .06, z).material = pavMat;
 box(scene, 14, .12, 2.5, 0xe7ddc9, 0, .06, -6.2);
 for (let i = -15; i <= 15; i++) box(scene, 1.2, .02, .12, 0xffffff, i * 4, .07, 0);
- 
+
 place(makeBank(), 0, -12);                                                  // the bank, centre-back
 place(makeATM(), 8.5, -6.3); place(makeATM(), 10, -6.3); const KIOSK = place(makeKiosk(), 12, -6.3); place(makeWatchman(), 2, -6.3);   // watchman stands in front of the bank                   // two ATM kiosks beside it
- 
+
 const SHOPS = [['GROCERY', 0x2f7d32], ['CHAI & SNACKS', 0xf28c28], ['TAILOR', 0x8e44ad], ['PHARMACY', 0x2f9e8f], ['SWEETS', 0xd64545]];
 const N = { '-3': 0, 3: 1 }, S = { '-2': 2, 1: 3, 3: 4 };      // which building index becomes which shop (north / south row)
 const pick = (i, m, off) => m[i] === undefined ? makeBuilding(6, 6, 4.5 + rnd() * 4, PASTELS[(i + off) % 6]) : makeShop(...SHOPS[m[i]]);
@@ -403,13 +404,13 @@ for (let i = -4; i <= 4; i++) {
   place(makeTree(i % 2 === 0), x + 4, 6.2);                                                            // trees along south pavement
 }
 for (let i = 0; i < 6; i++) place(makeTree(true), -22 + i * 9, -20);          // trees behind bank
- 
+
 // Loop 2: parked bikes, hawker stalls
 [[-14, -5.4], [-19, -5.4], [15, -5.4], [20, -5.4], [-8, 5.6], [8, 5.6]].forEach(([x, z], i) => place(makeBike(PASTELS[i % 6]), x, z, rnd() * 0.4 - 0.2));
 [[-12, -4.6, 0], [-16.5, -4.6, 0], [18, -4.6, 0], [-5, 4.6, Math.PI], [14, 4.6, Math.PI]].forEach(([x, z, r], i) =>
 { place(makeStall([0xd64545, 0xf28c28, 0x2f9e8f][i % 3]), x, z, r);
   for (const dx of [-.5, .5]) bystander(PASTELS[(i + (dx > 0 ? 3 : 1)) % 6] ^ 0x202020, x + dx, z + (r ? -1 : 1), r ? 0 : Math.PI); });   // customers facing the stall
- 
+
 [[-26, 4.6], [-11, 4.6], [11, 4.6], [26, 4.6]].forEach(([x, z]) => place(makeBench(), x, z, Math.PI));   // pavement benches face the road
 place(makeBench(), -6.2, -6.4); place(makeBench(), 6.2, -6.4);                                       // plaza benches
 for (let i = 0; i < 10; i++) place(makeTree(i % 2 === 0), (i < 5 ? -1 : 1) * (16 + (i % 5) * 5), -15.5);   // trees behind the north shops
@@ -426,7 +427,7 @@ for (let i = 0; i < 8; i++) {
   movers.push({ o: p, v: (i % 2 ? 1 : -1) * (.8 + rnd() * .5), min: -35, max: 35, ph: i, hl: .3, hw: .3, lz: i % 2 ? 2.9 : -2.9, lat: 0, want: 0 });
 }
 const avatar = makePerson(0x2b6cb0); avatar.visible = false; scene.add(avatar);   // you, in third person
- 
+
 /* ============ 6b. PHYSICS, SMART TRAFFIC, CULLING ============ */
 let pvx = 0, pvz = 0, frame = 0;                            // player velocity (m/s) and frame counter
 const clamp = THREE.MathUtils.clamp;
@@ -493,7 +494,7 @@ for (let i = 0; i < 18; i++) {
   const a = i / 18 * Math.PI * 2, r = 175 + rnd() * 35, m = makeMountain(35 + rnd() * 30, 45 + rnd() * 50, i % 2 ? 0x7e8fb5 : 0x93a3c4);
   m.position.x = Math.cos(a) * r; m.position.z = Math.sin(a) * r; scene.add(m);
 }
- 
+
 /* ============ 6c. CULLING (a cheap kind of occlusion) + indoor rooms for sound ============
    The GPU already hides things behind walls (depth test) and off-screen (frustum culling). On top of that we
    switch OFF whole groups that are far away, so Quest 2 skips their draw calls and shadows. Radius depends on size. */
@@ -510,7 +511,7 @@ const insp = [];
   const v = makeVeg(k); v.position.set(x, .8, z); scene.add(v);
   insp.push({ obj: v, x, z, y: .8, r: 1.8, grab: false });    // y = resting height, r = distance at which it lifts
 });
- 
+
 /* ============ 8. AUDIO (Web Audio, no files) ============ */
 let ac, master, lp, wasIn = false, soundOn = true, lastThud = 0;
 function initAudio() {
@@ -548,7 +549,7 @@ function setSound(on) {
   $('snd').textContent = 'Sound: ' + (on ? 'on' : 'off');
 }
 $('snd').onclick = () => setSound(!soundOn);
- 
+
 /* ============ 9. INPUT ============ */
 const keys = {}; let pitch = 0, third = false, started = false, locked = false, drag = false;
 const cvs = renderer.domElement;
@@ -579,11 +580,13 @@ addEventListener('keydown', e => {
 });
 addEventListener('keyup', e => keys[e.code] = false);
 addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
- 
+
 // Head position + facing direction (from the headset in VR, from yaw/pitch on desktop)
 const hp = new THREE.Vector3(), hd = new THREE.Vector3(), tmp = new THREE.Vector3();
 function headPose() {
-  if (renderer.xr.isPresenting) { const c = renderer.xr.getCamera(); c.getWorldPosition(hp); c.getWorldDirection(hd); }
+  if (renderer.xr.isPresenting) { const xc = renderer.xr.getCamera(), e = (xc.cameras[0] || xc).matrixWorld.elements;   // left-eye camera matrix = real head pose in the world
+    hp.set(e[12], e[13], e[14]); hd.set(-e[8], -e[9], -e[10]);
+    if (!(hd.lengthSq() > .01) || !isFinite(hd.x + hd.z + hp.x + hp.z)) { hp.copy(rig.position); const y = rig.rotation.y; hd.set(-Math.sin(y), 0, -Math.cos(y)); }   /* safety fallback */ }
   else { const y = rig.rotation.y; hp.copy(rig.position); hd.set(-Math.sin(y) * Math.cos(pitch), Math.sin(pitch), -Math.cos(y) * Math.cos(pitch)); }
 }
 function toggleGrab() {                                  // pick up / put back the nearest inspectable
@@ -592,7 +595,7 @@ function toggleGrab() {                                  // pick up / put back t
   for (const i of insp) { const d = Math.hypot(rig.position.x - i.x, rig.position.z - i.z); if (d < bd) { bd = d; best = i; } }
   if (best) best.grab = true;
 }
- 
+
 /* VR: sessions, controllers, sticks */
 for (let i = 0; i < 2; i++) { const c = renderer.xr.getController(i); c.addEventListener('selectstart', onSelect); c.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(0, 0, -3)]), new THREE.LineBasicMaterial({ color: 0xffffff }))); /* white pointer ray */ rig.add(c); }
 renderer.xr.addEventListener('sessionstart', () => {
@@ -606,22 +609,24 @@ function snapTurn(a) {                                   // rotate the rig aroun
   rig.rotation.y += a; rig.position.x += ox - (ox * c + oz * s); rig.position.z += oz - (-ox * s + oz * c);
 }
 function readSticks() {
-  let sx = 0, sy = 0; const ses = renderer.xr.getSession(); if (!ses) return [0, 0];
+  let sx = 0, sy = 0, idx = 0; const ses = renderer.xr.getSession(); if (!ses) return [0, 0];
   for (const src of ses.inputSources) {
-    const gp = src.gamepad; if (!gp) continue;
-    const ax = gp.axes[2] ?? gp.axes[0] ?? 0, ay = gp.axes[3] ?? gp.axes[1] ?? 0;
-    if (src.handedness === 'left') { sx = Math.abs(ax) > .15 ? ax : 0; sy = Math.abs(ay) > .15 ? -ay : 0; }
-    if (src.handedness === 'right') {
-      if (Math.abs(ax) > .7 && !snapLock) { snapTurn(-Math.sign(ax) * Math.PI / 6); snapLock = true; }   // 30° snap turn
+    const gp = src.gamepad, i0 = idx++; if (!gp) continue;
+    const A = gp.axes, ax = Math.abs(A[2] || 0) > Math.abs(A[0] || 0) ? A[2] || 0 : A[0] || 0, ay = Math.abs(A[3] || 0) > Math.abs(A[1] || 0) ? A[3] || 0 : A[1] || 0;   // thumbstick = axes 2,3 (some browsers: 0,1)
+    const hand = src.handedness === 'left' || src.handedness === 'right' ? src.handedness : (i0 === 0 ? 'left' : 'right');
+    if (hand === 'left') { sx = Math.abs(ax) > .15 ? ax : 0; sy = Math.abs(ay) > .15 ? -ay : 0; }          // left stick: glide
+    else {                                                                                              // right stick: 30 degree snap turn
+      if (Math.abs(ax) > .7 && !snapLock) { snapTurn(-Math.sign(ax) * Math.PI / 6); snapLock = true; }
       else if (Math.abs(ax) < .3) snapLock = false;
     }
-    const b = gp.buttons[4]?.pressed;                   // A (right) / X (left) face button
-    if (b && !prevBtn[src.handedness]) setSound(!soundOn);
-    prevBtn[src.handedness] = b;
+    const press = (i, fn) => { const k = hand + i, b = gp.buttons[i]?.pressed; if (b && !prevBtn[k]) fn(); prevBtn[k] = b; };   // fire once per press
+    press(4, () => setSound(!soundOn));            // A / X: sound on-off
+    press(1, toggleGrab); press(3, toggleGrab);    // grip or stick-click: hold / release the nearest object
+    press(5, () => rig.position.set(0, 0, 3.8));   // B / Y: back to the start (if you ever get stuck)
   }
   return [sx, sy];
 }
- 
+
 /* ============ 9b. FUNCTIONAL KIOSK ============
    The kiosk screen is a canvas. draw() repaints it for the current screen (KS.scr) and records each button's
    rectangle in `btns`. A ray (from your eyes on desktop, from the controller in VR) hits the screen mesh, the hit's
@@ -655,7 +660,7 @@ async function recommend(a) {                              // 1) your LLM server
   } catch (e) { /* fall back to local matching */ }
   return SCHEMES.filter(x => x.ok(a)).sort((p, q) => q.w - p.w).slice(0, 5);
 }
- 
+
 const KS = { scr: 'home', a: [], q: 0, list: [], pick: null, docs: {}, aad: '', prog: 0, msg: '', ref: '' };
 const kc = KIOSK.userData.cv.getContext('2d'), ktex = KIOSK.userData.tex; let btns = [];
 const B = (x, y, w, h, col, t, sub, fn, dim) => {            // draw a button and remember where it is
@@ -739,7 +744,7 @@ function aimAt(ctrl) {                                      // cast a ray at the
 function onSelect(e) { if (!aimAt(e.target)) toggleGrab(); }   // VR trigger: press kiosk button if pointing at it, else hold object
 addEventListener('click', () => { if (started && !renderer.xr.isPresenting) aimAt(); });
 draw();
- 
+
 /* ============ 10. MAIN LOOP ============ */
 const clock = new THREE.Clock();
 renderer.setAnimationLoop(() => {
@@ -756,7 +761,7 @@ renderer.setAnimationLoop(() => {
   const moving = sx || sy;
   pvx = pvz = 0;
   if (moving) { const l = Math.hypot(sx, sy) > 1 ? Math.hypot(sx, sy) : 1; pvx = (fx * sy - fz * sx) / l * speed; pvz = (fz * sy + fx * sx) / l * speed; move(pvx * dt, pvz * dt); }
- 
+
   // camera: first person (inside rig) or third person (pulled back behind the avatar)
   if (!xr) {
     rig.position.y = EYE; camera.rotation.x = pitch;
@@ -764,7 +769,7 @@ renderer.setAnimationLoop(() => {
     avatar.visible = third; avatar.position.set(rig.position.x, 0, rig.position.z); avatar.rotation.y = rig.rotation.y + Math.PI;   // face away from the camera
     const s = moving ? Math.sin(t * 8) * .5 : 0; avatar.userData.legs[0].rotation.x = s; avatar.userData.legs[1].rotation.x = -s; avatar.userData.arms.forEach((a, k) => a.rotation.x = k ? s : -s);
   }
- 
+
   // movers: cars and walkers look ahead, brake or wait for anything in their way (other cars, people, YOU), then move
   for (const m of movers) {
     const o = m.o, ax = m.ax || 'x'; m.v0 ??= m.v; m.cur ??= m.v0;         // v0 = wanted speed, cur = actual speed
@@ -802,7 +807,7 @@ renderer.setAnimationLoop(() => {
   const nk = Math.hypot(rig.position.x - 12, rig.position.z + 6.3) < 3.5;
   $('hint').textContent = nk ? 'Aim the dot at the kiosk screen, then click / press Enter' : 'Press E (or VR trigger) to hold the object';
   $('hint').style.display = (nearAny || nk) && !xr ? 'block' : 'none';
- 
+
   renderer.render(scene, camera);
 });
 </script>
