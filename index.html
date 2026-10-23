@@ -26,6 +26,7 @@
   #hint{position:fixed;left:50%;bottom:70px;transform:translateX(-50%);z-index:20;padding:8px 14px;
     background:rgba(228,87,46,.92);color:#fff;border-radius:20px;font-size:14px;display:none}
   #xh{position:fixed;left:50%;top:50%;width:6px;height:6px;margin:-3px;border-radius:50%;background:#fff;box-shadow:0 0 0 1px #000;z-index:15;pointer-events:none}
+  #tbox{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);z-index:30;width:min(520px,94vw);padding:10px 12px;background:rgba(30,25,45,.92);color:#fff;border-radius:14px;font-size:14px;display:none}#tbox input{width:calc(100% - 100px);padding:8px;border-radius:8px;border:0}#tbox button{margin-left:6px;padding:8px 10px;border:0;border-radius:8px;background:#e4572e;color:#fff;cursor:pointer}
   #snd{position:fixed;top:16px;left:12px;z-index:20;padding:8px 12px;border:0;border-radius:8px;background:#2f5d8a;color:#fff;font-size:14px;cursor:pointer}
 </style>
 </head>
@@ -37,11 +38,11 @@
 </div></div>
 <div id="vrwrap"></div>
 <button id="snd">Sound: off</button>
-<input type="file" id="file" hidden accept="image/*,.pdf"><div id="xh"></div><div id="hint">Press E (or VR trigger) to hold the object</div>
+<input type="file" id="file" hidden accept="image/*,.pdf"><div id="tbox"><b id="tbn"></b><div id="tbt" style="margin:6px 0"></div><input id="tbi" placeholder="Say something, press Enter" autocomplete="off"><button id="tbm" title="Speak">🎤</button><button id="tbx">✕</button></div><div id="xh"></div><div id="hint">Press E (or VR trigger) to hold the object</div>
 <div id="legend">
   <b>Controls</b><br>
   Desktop: WASD / arrows walk · Shift faster · mouse look (or drag) · scroll zoom<br>
-  F first/third person · E hold object · M sound<br>Kiosk: aim the dot at its screen, click or Enter (VR: point + trigger)<br>
+  F first/third person · E hold object · M sound<br>T talk to someone nearby (VR: point at them + trigger)<br>Kiosk: aim the dot at its screen, click or Enter (VR: point + trigger)<br>
   VR: left stick glide · right stick snap-turn 30° · A/X sound · trigger = press kiosk / hold object · grip or stick-click = hold · B/Y = back to start
 </div>
 
@@ -54,6 +55,7 @@
 <script type="module">
 import * as THREE from 'three';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';   // fuses many small meshes into one (fewer draw calls)
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';   // boxes with soft bevelled edges
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';       // fake studio light for realistic reflections
 
@@ -192,14 +194,45 @@ function makeCar(col) {                                   // faces +x, moving (n
   return g;
 }
 
-function makePerson(shirt) {                               // rounded (capsule) body, swinging arms and legs
-  const g = new THREE.Group(), skin = 0xc68642, cap = (p, r, len, c, x, y, z) => add(p, new THREE.CapsuleGeometry(r, len, 6, 14), c, x, y, z);
-  g.userData.legs = [-.12, .12].map(x => { const p = new THREE.Group(); p.position.set(x, .8, 0); cap(p, .085, .62, 0x3b3b58, 0, -.4, 0); g.add(p); return p; });
-  g.userData.arms = [-.27, .27].map(x => { const p = new THREE.Group(); p.position.set(x, 1.4, 0); cap(p, .055, .46, shirt, 0, -.28, 0); g.add(p); return p; });
-  cap(g, .17, .36, shirt, 0, 1.12, 0).scale.z = .65;
-  cyl(g, .05, .06, .1, skin, 0, 1.5, 0, 12);
-  ball(g, .17, skin, 0, 1.6, 0); ball(g, .18, 0x2a1d14, 0, 1.66, -.03); box(g, .06, .06, .08, 0xb5733a, 0, 1.58, .17);
+const allPeople = [], SKINS = [0xc68642, 0x8d5524, 0xe0ac69, 0xa9714b, 0x6b4423], HAIRS = [0x15110e, 0x2a1d14, 0x3b2a1c, 0x15110e, 0x8a8a8a];
+const NAMES = ['Ravi', 'Priya', 'Arjun', 'Sunita', 'Imran', 'Meena', 'Karan', 'Lata', 'Vikram', 'Anita', 'Suresh', 'Fatima'];
+const PM = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: .75, envMapIntensity: .3 });   // one shared material; colour lives in the vertices
+function part(geo, col, x, y, z, sx = 1, sy = 1, sz = 1, rx = 0) {   // position/scale a piece and paint it with a vertex colour
+  if (rx) geo.rotateX(rx); geo.scale(sx, sy, sz); geo.translate(x, y, z);
+  const c = new THREE.Color(col), n = geo.attributes.position.count, a = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) { a[i * 3] = c.r; a[i * 3 + 1] = c.g; a[i * 3 + 2] = c.b; }
+  geo.setAttribute('color', new THREE.BufferAttribute(a, 3)); return geo;
+}
+const merged = parts => { const m = new THREE.Mesh(mergeGeometries(parts), PM); m.castShadow = m.receiveShadow = true; return m; };   // MANY pieces -> ONE mesh
+function makePerson(shirt) {                               // face, ears, hair/turban, clothes, jointed arms and legs (elbows + knees)
+  const h = (shirt >>> 0) % 97, woman = h % 3 === 0, skin = SKINS[h % 5], hair = HAIRS[(h >> 1) % 5], pants = woman ? 0x7a3b69 : [0x3b3b58, 0x4a4a4a, 0xc9b99a][h % 3];
+  const g = new THREE.Group(), C = (r, l) => new THREE.CapsuleGeometry(r, l, 2, 6), S = r => new THREE.SphereGeometry(r, 8, 6), bx = (w, hh, d) => new THREE.BoxGeometry(w, hh, d);
+  const B = [part(C(.15, .08), pants, 0, .88, 0, 1.15, 1, .75), part(C(.16, .3), shirt, 0, 1.13, 0, 1.1, 1, .72), part(new THREE.CylinderGeometry(.05, .06, .1, 8), skin, 0, 1.5, 0),
+    part(new THREE.SphereGeometry(.11, 14, 10), skin, 0, 1.62, 0, .95, 1.18, 1.05), part(S(.025), skin, -.11, 1.62, 0, .5, 1, .8), part(S(.025), skin, .11, 1.62, 0, .5, 1, .8),   // head + ears
+    part(new THREE.ConeGeometry(.017, .05, 6), skin, 0, 1.605, .115, 1, 1, 1, Math.PI / 2),                                                       // nose
+    part(S(.017), 0xffffff, -.04, 1.635, .103), part(S(.017), 0xffffff, .04, 1.635, .103), part(S(.009), 0x151515, -.04, 1.635, .113), part(S(.009), 0x151515, .04, 1.635, .113),   // eyes
+    part(bx(.05, .01, .01), hair, -.04, 1.67, .108), part(bx(.05, .01, .01), hair, .04, 1.67, .108), part(bx(.045, .008, .01), 0x8a3b3b, 0, 1.565, .108),                       // brows + mouth
+    part(S(.06), shirt, -.25, 1.4, 0), part(S(.06), shirt, .25, 1.4, 0)];                                                                                                       // shoulders
+  if (h % 7 === 0 && !woman) B.push(part(S(.135), 0xd2691e, 0, 1.7, 0, 1, .75, 1.05));            // turban
+  else B.push(part(new THREE.SphereGeometry(.116, 12, 8), hair, 0, 1.665, -.03, 1, .82, 1.02));                                  // hair
+  if (woman) B.push(part(C(.07, .32), hair, 0, 1.46, -.1, 1.5, 1, .6), part(new THREE.TorusGeometry(.14, .03, 6, 14), 0xf2c14e, 0, 1.43, .01, 1, 1, .9, Math.PI / 2), part(new THREE.CylinderGeometry(.17, .23, .55, 12), shirt, 0, .78, 0, 1, 1, .8));   // long hair, scarf, kurta
+  else { B.push(part(new THREE.CylinderGeometry(.17, .19, .16, 12), shirt, 0, .96, 0, 1, 1, .78)); if (h % 4 === 0) B.push(part(bx(.06, .012, .012), hair, 0, 1.588, .113)); }   // shirt hem, moustache
+  g.add(merged(B));
+  g.userData.knees = []; g.userData.elbows = [];
+  g.userData.legs = [-.1, .1].map(x => {                    // hip -> thigh, knee -> shin + shoe
+    const p = new THREE.Group(); p.position.set(x, .8, 0); p.add(merged([part(C(.085, .3), pants, 0, -.21, 0)]));
+    const k = new THREE.Group(); k.position.y = -.42; k.add(merged([part(C(.062, .26), pants, 0, -.2, 0), part(bx(.1, .07, .25), 0x2a2a2a, 0, -.36, .06)])); p.add(k); g.userData.knees.push(k); g.add(p); return p;
+  });
+  g.userData.arms = [-.25, .25].map(x => {                  // shoulder -> upper arm, elbow -> forearm + hand
+    const p = new THREE.Group(); p.position.set(x, 1.42, 0); p.add(merged([part(C(.045, .2), shirt, 0, -.15, 0)]));
+    const e = new THREE.Group(); e.position.y = -.3; e.rotation.x = -.15; e.add(merged([part(C(.04, .17), skin, 0, -.14, 0), part(S(.045), skin, 0, -.29, 0)])); p.add(e); g.userData.elbows.push(e); g.add(p); return p;
+  });
+  g.userData.name = NAMES[h % NAMES.length]; g.userData.woman = woman; allPeople.push(g);
   return g;
+}
+function pose(o, s) {                                       // s = swing angle. Back-swinging leg bends its knee; forward-swinging arm bends its elbow
+  const u = o.userData; u.legs[0].rotation.x = s; u.legs[1].rotation.x = -s; u.knees[0].rotation.x = Math.max(0, s) * 1.4; u.knees[1].rotation.x = Math.max(0, -s) * 1.4;
+  u.arms.forEach((a, k) => { const r = k ? s : -s; a.rotation.x = r; u.elbows[k].rotation.x = -.2 - Math.max(0, -r) * 1.2; });
 }
 
 function makeStall(canopy) {                              // hawker's stall + hawker; front faces +z
@@ -287,7 +320,7 @@ const stander = (p, col, x, z, ry) => {                     // standing person i
   const s = makePerson(col); s.position.set(x, .1, z); s.rotation.y = ry; p.add(s); p.userData.fp?.push([x, z, .5, .5]);
 };
 const sitter = (p, col, x, z, ry) => {                      // seated person: legs swung forward, body lowered
-  const s = makePerson(col); s.userData.legs.forEach(l => l.rotation.x = -Math.PI / 2);
+  const s = makePerson(col); s.userData.legs.forEach(l => l.rotation.x = -Math.PI / 2); s.userData.knees.forEach(k => k.rotation.x = Math.PI / 2);
   s.position.set(x, -.3, z); s.rotation.y = ry; p.add(s);
 };
 const chairAt = (p, x, z, ry, c) => { const ch = makeChair(c); ch.position.set(x, 0, z); ch.rotation.y = ry; p.add(ch); };
@@ -412,7 +445,7 @@ function makeVeg(kind) {                                    // small crate of ve
   return g;
 }
 function makeWatchman() {                                   // khaki uniform, cap and a wooden stick
-  const p = makePerson(0x8b7d4f); p.userData.fp = [[0, 0, .5, .5]];
+  const p = makePerson(0x8b7d4f); p.userData.fp = [[0, 0, .5, .5]]; p.userData.role = 'watchman';
   cyl(p, .19, .19, .08, 0x3a3a3a, 0, 1.78, 0, 8); box(p, .04, 1.1, .04, 0x5b3a29, .4, .85, .1);
   return p;
 }
@@ -664,10 +697,12 @@ addEventListener('wheel', e => {                         // scroll zoom = change
   camera.fov = THREE.MathUtils.clamp(camera.fov + e.deltaY * .03, 30, 90); camera.updateProjectionMatrix();
 });
 addEventListener('keydown', e => {
+  if (e.target.id === 'tbi') { if (e.code === 'Escape') closeTalk(); return; }   // typing in the talkbox must not walk you around
   keys[e.code] = true;
   if (e.code === 'KeyF' && !renderer.xr.isPresenting) third = !third;
   if (e.code === 'KeyE') toggleGrab();
   if (e.code === 'KeyM') setSound(!soundOn);
+  if (e.code === 'KeyT' && !renderer.xr.isPresenting) openTalk();
   if (e.code === 'Enter' && !renderer.xr.isPresenting) aimAt();
   if (KS.scr === 'aad') { if (/^(Digit|Numpad)\d$/.test(e.code)) kpress(e.key); if (e.code === 'Backspace') kpress('⌫'); }   // type Aadhaar digits on a keyboard
 });
@@ -834,9 +869,76 @@ function aimAt(ctrl) {                                      // cast a ray at the
   const x = h.uv.x * 512, y = (1 - h.uv.y) * 730, b = btns.find(b => x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h);
   if (b) b.fn(); return true;
 }
-function onSelect(e) { if (!aimAt(e.target)) toggleGrab(); }   // VR trigger: press kiosk button if pointing at it, else hold object
+function onSelect(e) { if (!aimAt(e.target) && !talkAim()) toggleGrab(); }   // VR trigger: press kiosk button if pointing at it, else hold object
 addEventListener('click', () => { if (started && !renderer.xr.isPresenting) aimAt(); });
 draw();
+
+/* ============ 9c. TALKBOX: talk to the people ============
+   Press T near someone (or point + trigger in VR). They turn to you, answer in a speech bubble and out loud
+   (browser speech synthesis). Replies come from a small built-in script keyed to who they are and what you say.
+   OPTIONAL: set TALK_ENDPOINT to your own server (that calls an LLM). It receives {name, role, message}, returns {reply}. */
+const TALK_ENDPOINT = '';
+const any = a => a[Math.random() * a.length | 0];
+const LINES = {
+  street: ['Namaste! Lovely morning, isn\'t it?', 'The bank is the big building with the yellow sign. ATMs are on its right.', 'Mind the cars, they come quickly here.', 'I am off to the market.'],
+  stall: ['Fresh and sweet today, take a look!', 'Everything is fresh, very fair price.', 'Tea and snacks are in the shop across the road.'],
+  bank: ['Welcome to City Bank. How can I help?', 'To open an account, bring your Aadhaar and a photo.', 'The government kiosk outside will suggest schemes for you.', 'Please wait for your token number.'],
+  watchman: ['Good morning, sir. ATMs are on the right.', 'The government kiosk is next to the ATMs.', 'Please keep the entrance clear.'],
+  'GROCERY': ['Fresh tomatoes, carrots and cabbage today!', 'Rice and dal are on the back shelves.'], 'CHAI & SNACKS': ['One cup of chai for ten rupees!', 'Hot samosas are coming out now.'],
+  'TAILOR': ['I can stitch a kurta in two days.', 'Please measure first, then we choose the cloth.'], 'PHARMACY': ['Please show the prescription.', 'We are open until nine in the evening.'], 'SWEETS': ['Try the fresh jalebi, still warm!', 'Laddoos are made this morning.'],
+};
+const TOPICS = [[/hello|hi\b|namaste|hey/, 'Namaste! How are you today?'], [/bank|account|loan/, 'The bank has account and loan desks. Bring your Aadhaar and a photo.'], [/atm|cash/, 'The ATMs are just to the right of the bank door.'],
+  [/scheme|kiosk|government|aadhaar|aadhar/, 'Use the government kiosk next to the ATMs. It suggests schemes and links your Aadhaar.'], [/price|cost|how much/, 'A very fair price, I promise!'], [/thank/, 'You are welcome!'], [/bye/, 'Goodbye, take care!'], [/your name|who are you/, 'I am NAME.']];
+const SHOPNAME = ['', 'GROCERY', 'CHAI & SNACKS', 'TAILOR', 'PHARMACY', 'SWEETS'], STALLS = [[-16.5, -4.6], [-12, -4.6], [18, -4.6], [-5, 4.6], [14, 4.6]];
+function roleOf(p) {                                        // who is this person? decided from where they stand
+  if (p.userData.role) return p.userData.role;
+  p.getWorldPosition(tmp); const x = tmp.x, z = tmp.z, i = rooms.findIndex(r => x > r[0] && x < r[1] && z > r[2] && z < r[3]);
+  return i === 0 ? 'bank' : i > 0 ? SHOPNAME[i] : STALLS.some(q => Math.hypot(q[0] - x, q[1] - z) < 2.2) ? 'stall' : 'street';
+}
+const bcv = document.createElement('canvas'); bcv.width = 512; bcv.height = 160; const bc = bcv.getContext('2d'), btex = ctex(bcv);
+const bub = new THREE.Sprite(new THREE.SpriteMaterial({ map: btex, transparent: true, depthWrite: false })); bub.scale.set(1.8, .56, 1); bub.visible = false;   // speech bubble (always faces you)
+const talk = { npc: null, until: 0 };
+function bubbleShow(npc, text) {
+  bc.clearRect(0, 0, 512, 160); bc.fillStyle = 'rgba(255,255,255,.95)'; bc.strokeStyle = '#1d3557'; bc.lineWidth = 4; bc.beginPath(); bc.roundRect(4, 4, 504, 152, 22); bc.fill(); bc.stroke();
+  bc.fillStyle = '#1d3557'; bc.font = '26px sans-serif'; bc.textAlign = 'center'; let line = '', y = 50;
+  for (const w of text.split(' ')) { if ((line + w).length > 34) { bc.fillText(line.trim(), 256, y); y += 34; line = ''; } line += w + ' '; } bc.fillText(line.trim(), 256, y);
+  btex.needsUpdate = true; npc.add(bub); bub.position.set(0, 2.25, 0); bub.visible = true;
+}
+function say(npc, text) {
+  talk.npc = npc; talk.until = clock.elapsedTime + 9; bubbleShow(npc, text);
+  const r = roleOf(npc); $('tbn').textContent = npc.userData.name + ' · ' + (r === 'street' ? 'Passer-by' : r === 'stall' ? 'Hawker' : r === 'bank' ? 'Bank' : r); $('tbt').textContent = text;
+  if (soundOn && window.speechSynthesis) { speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance(text); u.lang = 'en-IN'; u.pitch = npc.userData.woman ? 1.35 : .9; speechSynthesis.speak(u); }
+}
+async function respond(npc, text) {
+  let r = '';
+  if (TALK_ENDPOINT) try { r = (await (await fetch(TALK_ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: npc.userData.name, role: roleOf(npc), message: text }) })).json()).reply; } catch (e) { }
+  if (!r) { const hit = TOPICS.find(([re]) => re.test(text.toLowerCase())); r = hit ? hit[1] : any(LINES[roleOf(npc)] || LINES.street); }
+  say(npc, r.replace('NAME', npc.userData.name));
+}
+function nearestPerson(maxD = 3.2) {                        // closest person in front of you
+  headPose(); let best = null, bs = 1e9; const fl = Math.hypot(hd.x, hd.z) || 1;
+  for (const p of allPeople) {
+    if (p === avatar || !p.visible) continue; p.getWorldPosition(tmp); const dx = tmp.x - hp.x, dz = tmp.z - hp.z, d = Math.hypot(dx, dz);
+    if (d > maxD) continue; const dot = (dx * hd.x + dz * hd.z) / ((d * fl) || 1); if (dot < .5 && d > 1) continue; if (d - dot < bs) { bs = d - dot; best = p; }
+  }
+  return best;
+}
+function openTalk() {
+  const n = nearestPerson(); $('tbox').style.display = 'block';
+  if (!n) { $('tbn').textContent = 'Talkbox'; $('tbt').textContent = 'Nobody is close enough. Walk up to a person, face them and press T.'; return; }
+  document.exitPointerLock?.(); $('tbi').focus(); respond(n, 'hello');
+}
+function closeTalk() { $('tbox').style.display = 'none'; talk.until = 0; bub.visible = false; window.speechSynthesis?.cancel(); $('tbi').blur(); }
+$('tbx').onclick = closeTalk;
+$('tbi').addEventListener('keydown', e => { if (e.key === 'Enter' && $('tbi').value.trim() && talk.npc) { respond(talk.npc, $('tbi').value); $('tbi').value = ''; } });
+$('tbm').onclick = () => {                                  // voice input (Chrome / Edge on desktop)
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition; if (!SR) { $('tbt').textContent = 'Voice input is not supported here. Please type.'; return; }
+  const r = new SR(); r.lang = 'en-IN'; r.onresult = e => talk.npc && respond(talk.npc, e.results[0][0].transcript); r.start();
+};
+function talkAim() {                                        // VR: the pointer ray (set by aimAt) hits a person -> they speak
+  for (const p of allPeople) { if (p === avatar || !p.visible) continue; p.getWorldPosition(tmp); tmp.y += 1.1; if (tmp.distanceTo(ray.ray.origin) < 6 && ray.ray.distanceToPoint(tmp) < .5) { respond(p, ''); return true; } }
+  return false;
+}
 
 /* ============ 10. MAIN LOOP ============ */
 const clock = new THREE.Clock();
@@ -860,7 +962,7 @@ renderer.setAnimationLoop(() => {
     rig.position.y = EYE; camera.rotation.x = pitch;
     camera.position.set(0, third ? .6 : 0, third ? 3.5 : 0);
     avatar.visible = third; avatar.position.set(rig.position.x, 0, rig.position.z); avatar.rotation.y = rig.rotation.y + Math.PI;   // face away from the camera
-    const s = moving ? Math.sin(t * 8) * .5 : 0; avatar.userData.legs[0].rotation.x = s; avatar.userData.legs[1].rotation.x = -s; avatar.userData.arms.forEach((a, k) => a.rotation.x = k ? s : -s);
+    const s = moving ? Math.sin(t * 8) * .5 : 0; pose(avatar, s);
   }
 
   // movers: cars and walkers look ahead, brake or wait for anything in their way (other cars, people, YOU), then move
@@ -872,7 +974,7 @@ renderer.setAnimationLoop(() => {
       else if (m.want && clearAhead(m, 0, .8)) m.want = 0;
       m.lat += clamp(m.want - m.lat, -1.2 * dt, 1.2 * dt); o.position.z = m.lz + m.lat;
     }
-    const free = clearAhead(m, m.lat || 0), goal = free ? m.v0 : (m.want ? m.v0 * .4 : 0);   // keep walking slowly while sidestepping
+    const free = !(m.hold > t) && clearAhead(m, m.lat || 0), goal = free ? m.v0 : (m.want ? m.v0 * .4 : 0);   // keep walking slowly while sidestepping
     m.cur += (goal - m.cur) * Math.min(1, dt * (free ? 1.5 : 6));   // accelerate gently, brake hard
     o.position[ax] += m.cur * dt;
     if (o.position[ax] > m.max || o.position[ax] < m.min) {
@@ -882,9 +984,12 @@ renderer.setAnimationLoop(() => {
     if (o.userData.legs) {
       const dr = Math.sign(m.v0); o.rotation.y = ax === 'x' ? dr * Math.PI / 2 : (dr > 0 ? 0 : Math.PI);   // face the walking direction
       const s = Math.sin(t * 5 + m.ph) * .5 * Math.min(1, Math.abs(m.cur));                            // swing fades when they stop
-      o.userData.legs[0].rotation.x = s; o.userData.legs[1].rotation.x = -s; o.userData.arms.forEach((a, k) => a.rotation.x = k ? s : -s);
+      pose(o, s);
     }
   }
+  if (talk.npc && clock.elapsedTime < talk.until) {   // the person you talk to stops and turns to face you
+    talk.npc.getWorldPosition(tmp); talk.npc.rotation.y = Math.atan2(hp.x - tmp.x, hp.z - tmp.z); const mv = movers.find(q => q.o === talk.npc); if (mv) mv.hold = clock.elapsedTime + .3;
+  } else if (bub.visible) bub.visible = false;
   stepProps(dt); pushOut(); for (const f of fans) f.rotation.y += dt * 5;                                    // physics props + keep you from being inside a car
   if (frame++ % 10 === 0) { cullStep(); lightStep(); }
   if (lp) { const inside = rooms.some(r => hp.x > r[0] && hp.x < r[1] && hp.z > r[2] && hp.z < r[3]); if (inside !== wasIn) { wasIn = inside; lp.frequency.setTargetAtTime(inside ? 900 : 18000, ac.currentTime, .15); } }   // muffled sound indoors
